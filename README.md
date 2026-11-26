@@ -13,7 +13,9 @@ Metronome is a design and an early proof of concept.
 
 Build step 1 of the SPEC, local only: one `metronome` binary holding an HTTP service, a CLI and an append-only
 event log in SQLite. Items, slices, runs, slots and asks are all derived from the log, so restarting the service
-replays it. GitHub events are entered by hand for now (`metronome github …`); a `gh` poller is next.
+replays it. `metronome github poll` reads each submitted slice's PR through `gh` and records what GitHub shows:
+the PR opening, checks on its head, review and merge. The same events can still be entered by hand
+(`metronome github …`).
 
 ```sh
 go build -o metronome ./cmd/metronome
@@ -29,6 +31,9 @@ go build -o metronome ./cmd/metronome
 ./metronome ask --run R1 --type answer --question "CSV or JSON?"
 ./metronome inbox pat
 ./metronome answer F2 "CSV"
+./metronome next --runner laptop             # resumes the answered slice: run R2
+./metronome submit R2 --branch metronome/I1.1
+./metronome --as github github poll --every 1m  # follows the PR on that branch until it merges
 ./metronome board
 ```
 

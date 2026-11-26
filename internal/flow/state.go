@@ -98,6 +98,7 @@ type Slice struct {
 	RunID        string      `json:"run_id,omitempty"`
 	StalledAt    time.Time   `json:"stalled_at,omitzero"`
 	Branch       string      `json:"branch,omitempty"`
+	Submits      int         `json:"submits"`
 	PR           *PR         `json:"pr,omitempty"`
 }
 

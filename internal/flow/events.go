@@ -286,6 +286,7 @@ func (s *State) apply(e Event) error {
 			sl.Status = SliceFlagged
 		case CloseSubmitted:
 			sl.Status, sl.Branch, sl.Rework = SliceSubmitted, p.Branch, false
+			sl.Submits++
 		case CloseReleased:
 			sl.Status, sl.StalledAt = SliceStalled, e.At
 		case CloseLeaseExpired:
