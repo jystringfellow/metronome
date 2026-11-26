@@ -80,7 +80,7 @@ Pull, never push. A stage starts new work only when the next capped stage is und
 - Waiting on a human still counts as WIP. A flagged item keeps its slot, and a growing inbox is the signal to stop pulling.
 - One expedite slot for incidents from Monitor. It may exceed a limit by one and must be logged.
 - Limits are tuned in a monthly retro using review cycle time and blocked-item age. Raise a limit only after a stage stays idle.
-- Scope: limits are set per team, where a team owns a set of repos. Review also has a per-approver cap (Default 2): the number of PRs ready for review that wait on one named approver. Because a Review slot is reserved at claim, the per-approver cap is what measures reviewer attention. A PR whose approvers are all at their cap stays a draft until one frees. Cloud Execute capacity is a team budget and local Execute capacity is declared per person.
+- Scope: stage limits are set per workstream. A workstream is a board with a backlog: one team's board, or an initiative that spans teams. Two caps protect one person across every workstream they touch, and are ceilings, not capacity. The per-approver cap (Default 2) is the number of PRs ready for review that wait on one named approver. Because a Review slot is reserved at claim, it is what measures reviewer attention. A PR whose approvers are all at their cap stays a draft until one frees. The local runner cap is how many claims one person's runners may hold. Cloud Execute capacity is a workstream budget.
 
 ## 4. Work model and backward transitions
 
@@ -116,7 +116,7 @@ Touchpoints by stage, with what the agent does while waiting and what happens wi
 
 - Backlog, Decide: the human sets the top of the ranked list and kills items. The agent keeps discovering and scoring. The queue stays as ranked.
 - Plan, Answer: the human resolves open questions from /refine. The agent drafts slices for the confident parts. The item parks, freeing its Plan slot.
-- Plan, Approve: the human signs off the plan and slices. The agent does nothing, since work is gated. Reminder, then escalate to the team lead.
+- Plan, Approve: the human signs off the plan and slices. The agent does nothing, since work is gated. Reminder, then escalate to the workstream owner.
 - Execute, Answer: the human unblocks a runner that hit ambiguity. The run is released and the agent may claim another slice, while the flagged slice keeps its slots. The slice parks.
 - Test, Verify: the human judges what automation cannot, such as UX feel. The agent runs remaining checks. The item stays red and does not advance.
 - Review, Approve: tiers 2 and 3, the human approves the PR after reading ranked findings. Tier 1, the human skims ranked findings and merges, since there is no auto-merge at tier 1. Tier 0, the human can veto the automated approval before the auto-merge. The fixer repairs CI, conflicts, and feedback, 3 passes max. Reminder, then reassign the reviewer.
@@ -181,7 +181,7 @@ Both models run at the same time through one claim protocol.
 - Keeping the tracker current: state comes from runner reports (proposals only), from git and GitHub events (a branch name or a Work-Item commit trailer ties a PR to an item, and PR opened, CI results, and review events move the item), and from leases and timers (a missed heartbeat expires the lease and the slice becomes stalled, as defined in section 4).
 - Events are idempotent. A PR with no item is adopted by attaching or creating an item, flagged as untracked, and never rejected.
 - Gates rely on verified evidence such as CI and the repo's reviewer, never on a runner saying tests passed.
-- Local and cloud runs count against the same Execute limit. Local capacity is declared per person.
+- Local and cloud runs count against the same Execute limit. Each person's local runners are also held to the local runner cap.
 
 Local vs cloud:
 
@@ -274,7 +274,7 @@ Rules:
 
 Default (validate):
 
-- WIP limits 10, 3, 5, 8, 2, per team, and 2 PRs in review per approver. Validate by watching idle time and queue age for a month.
+- WIP limits 10, 3, 5, 8, 2, per workstream, and 2 PRs in review per approver. Validate by watching idle time and queue age for a month.
 - Fixer pass cap of 3. Track how often a third pass succeeds.
 - Tier downgrade after 20 clean releases. Compare with rollback and escape rates.
 - Unclaimed work timeout of one working day. Measure how long eligible items wait today.
