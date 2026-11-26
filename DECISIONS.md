@@ -52,19 +52,43 @@ open.
 - **Every item carries its workstream and an optional source link from the start,** so pulling work between
   workstreams can be added later without migrating data.
 
-## Designed, not built: source workstreams (2026-11-26)
+## Designed, not built: open workstreams and shared work (2026-11-26)
 
 Recorded so the data model leaves room for it. Nothing here is in the proof of concept.
 
+- **Anyone can create a workstream.** Its intake is pluggable: a skill, script or adapter fills its backlog and
+  ranks it, for example by usage or performance data.
+- **People find workstreams and choose how to give them time.** They participate by joining one as a member and
+  claiming from it directly, or they pull an item from it into their own workstream by reference.
+- **A pull by reference moves the work, not the record.** The item counts against the limits of the workstream
+  that pulled it, and keeps its link to the source, so the source's ranking and reporting still see it. An item
+  is in one workstream at a time, and the source shows where it went.
 - **A workstream may have no capacity** (limits of 0) and only supply ranked work. Other workstreams subscribe
-  to it with an allocation (at most N of its slices in flight) and an ownership filter (the paths, routes or
-  repositories they own).
+  to it, or pull from it by reference, using an ownership filter (the paths, routes or repositories they own).
 - **The source's ranking holds.** Within its filter, a subscriber takes items in the source's order. Taking one
   out of order is allowed, needs a reason, and shows in the source's view.
+- **A subscription is a standing pull:** an allocation (at most N slices in flight) plus an ownership filter, so a
+  team keeps drawing from a source without pulling each item by hand.
 - **Staffing an initiative is a settings change:** the source gains limits and members, who take items in
   strict priority order. Subscriptions carry on alongside.
 - **An item flows through the workstream that pulled it** and keeps its link to the source. The source's view
   is a query across every item linked to it.
+
+## Proposed (2026-11-26), not decided
+
+- **Release and Monitor read signal adapters.** An adapter records evidence on an item from a feature flag
+  service (on or off, rollout percentage, targeting), traffic data (for example, the share of sessions on a new
+  page against the old one) or an observability service (errors, latency, page load time). Each piece of
+  evidence names its source and when it was read. Metronome keeps snapshots and a link, and the time series stay
+  in the service that owns them. Uses:
+  - Release progress and gates, such as "done when the flag is at 100% and the new page carries 90% of traffic".
+  - Monitor checks, marking each hypothesis written at plan time proved or not from real numbers. A breach opens
+    a triage item or uses the expedite slot.
+  - Intake, where the same signals rank the backlog.
+- **A read-only web view served by the Metronome binary,** built on the same HTTP API and event feed: each
+  workstream's board with stage columns and WIP counts, each person's inbox, and an item page with its evidence
+  timeline. Writes such as approving or answering an ask stay in the CLI and MCP server at first. Built after
+  the GitHub poller, the reviewer adapter and an intake adapter, when there is a live loop to watch.
 
 ## Decided from the SPEC review (2026-11-26), now in SPEC.md
 
