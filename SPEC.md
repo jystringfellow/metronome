@@ -51,15 +51,15 @@ Backlog, Plan and refine, Execute, Test, Review, Release, Monitor, then back to 
 
 - Purpose: the same AI review passes on every PR.
 - Skills: /review calls the repo's approver through the reviewer contract. /fix runs on changes_needed and repairs CI, conflicts, and review feedback, 3 passes max. /rank sorts findings by severity.
-- Context: diff and approved plan, effective tier from the repo's rules, reviewer contract inputs, team standards and past review patterns.
-- Exit gate: the verdict is approve, or a human approves per tier. An evidence link is attached to the item.
+- Context: diff and approved plan, reviewer contract inputs, team standards and past review patterns.
+- Exit gate: the verdict is approve, or a human approves per tier, and the PR has merged. An evidence link is attached to the item. Merging is the last step of Review: when every PR of an item is approved, the item takes a Release slot and its PRs merge. If no Release slot is free, the last approved PR keeps its Review slot until one frees, so a full Release stage backs up into Review and the wait is counted.
 
 ### 2.6 Release
 
 - Purpose: UAT and go-to-market.
 - Skills: /uat drafts scripts and collects sign-off. /gtm drafts notes, docs, and enablement. /rollout manages flags and stages. /cleanup removes flags and rollout scaffolding once the release is stable.
 - Context: acceptance criteria, audience and launch calendar, flag configuration.
-- Exit gate: UAT signed off, the rollout approved per tier (a human for tiers 2 and 3, notify and veto for tiers 0 and 1), and cleanup scheduled.
+- Exit gate: UAT signed off at tiers 2 and 3, the rollout approved per tier (a human for tiers 2 and 3, notify and veto for tiers 0 and 1), and cleanup scheduled.
 
 ### 2.7 Monitor
 
@@ -72,7 +72,7 @@ Backlog, Plan and refine, Execute, Test, Review, Release, Monitor, then back to 
 
 Pull, never push. A stage starts new work only when the next capped stage is under its limit.
 
-- Defaults (Default): ready backlog 10, Plan 3, Execute 5 slices (local or cloud, never above the free Review slots), Review 3, Release 2. Test and Monitor have no cap because they are automated.
+- Defaults (Default): ready backlog 10, Plan 3, Execute 5 slices (local or cloud, never above the free Review slots), Review 8 (pipeline depth), 2 PRs in review per approver, Release 2. Test and Monitor have no cap because they are automated.
 - A claim reserves a Review slot up front and takes an Execute slot. The Execute slot is released when the slice's tests are green and its PR moves into review. The Review slot is held until the PR is approved. So a slice never finishes with no reviewer capacity waiting, and Execute's effective limit is the smaller of its own limit and the free Review slots. Test has no cap of its own.
 - Review is the throttle. A claim succeeds only if a Review slot is free. When Review is full, Execute stops pulling new slices. The Review limit measures pipeline depth, because a reservation is held through Execute and Test.
 - Cloud dispatch means the orchestrator claims a free slot on a runner's behalf. It never pushes work onto a full stage.
@@ -80,14 +80,18 @@ Pull, never push. A stage starts new work only when the next capped stage is und
 - Waiting on a human still counts as WIP. A flagged item keeps its slot, and a growing inbox is the signal to stop pulling.
 - One expedite slot for incidents from Monitor. It may exceed a limit by one and must be logged.
 - Limits are tuned in a monthly retro using review cycle time and blocked-item age. Raise a limit only after a stage stays idle.
-- Scope: limits are set per team, where a team owns a set of repos. Review also has a per-approver cap (Open). Because a Review slot is reserved at claim, the per-approver cap is what measures reviewer attention. Cloud Execute capacity is a team budget and local Execute capacity is declared per person.
+- Scope: limits are set per team, where a team owns a set of repos. Review also has a per-approver cap (Default 2): the number of PRs ready for review that wait on one named approver. Because a Review slot is reserved at claim, the per-approver cap is what measures reviewer attention. A PR whose approvers are all at their cap stays a draft until one frees. Cloud Execute capacity is a team budget and local Execute capacity is declared per person.
 
 ## 4. Work model and backward transitions
 
 - Item: a unit of value with intent, an owner, and a predicted tier. It may span several repos. It counts against the Backlog and Plan limits.
 - Slice: a one-session piece of an item with its own acceptance criteria. It counts against Execute from claim until its tests are green and its PR moves into review, and it reserves a Review slot at claim.
-- PR: one per slice per repo touched, so slices do not stack and parallel slices never share a PR. Each PR gets its own effective tier from that repo's rules. Its slice reserved a Review slot at claim, held until the PR is approved. The item's effective tier is the highest among its PRs. No PR of an item with several PRs merges until all of them are approved, and they then merge together. An approved PR releases its Review slot while it waits for its siblings, so an item can have more PRs than Review slots. If an approved PR's branch changes, it needs a fresh Review slot and a new approval. The item releases when all its PRs have merged.
+- PR: one per slice per repo touched, so slices do not stack and parallel slices never share a PR. Each PR gets its own effective tier from that repo's approver. Its slice reserved a Review slot at claim, held until the PR is approved. The item's effective tier is the highest among its PRs. No PR of an item with several PRs merges until all of them are approved, and they then merge together. An approved PR releases its Review slot while it waits for its siblings, so an item can have more PRs than Review slots. If an approved PR's branch changes, it needs a fresh Review slot and a new approval. The item releases when all its PRs have merged.
 - Run: one claim attempt on a slice by a runner, with a lease and a bundle hash. The run holds the lease. The slice holds its Execute slot until its PR moves into review, and its Review reservation from claim.
+- Waiting states (Decided), for items and slices alike:
+  - Flagged: waiting on a human ask. Keeps every slot it holds.
+  - Stalled: its run's lease expired. Keeps every slot it holds, and another runner can claim it. A stall that lasts past the stall timeout (Open) parks it.
+  - Parked: an ask or a stall timed out. Frees every slot it holds and returns to the front of its stage's queue with handoff notes.
 
 Backward transitions (Decided). Rework outranks new pulls for the next free Execute slot (Default, watch for starvation of new work).
 
@@ -97,7 +101,7 @@ Backward transitions (Decided). Rework outranks new pulls for the next free Exec
 - Human rejects the PR: returns to Execute with findings in the handoff notes. It keeps its Review reservation and reclaims an Execute slot ahead of new pulls. Decided by the approver.
 - UAT fails: returns to Execute for a defect, or to Plan if the intent was wrong. Frees its Release slot. Decided by the UAT owner.
 - Rollout or monitor breach: rolls back through the expedite lane, becomes a backlog item, and holds its Release slot until rolled back. Decided by on-call.
-- Lease expires: the run is closed and the slice returns to the Execute queue with handoff notes. It keeps its Review reservation unless it is parked, which releases it. Automatic.
+- Lease expires: the run is closed and the slice becomes stalled, keeping its Execute slot and Review reservation until another runner claims it or the stall timeout parks it. Automatic.
 
 ## 5. Humans in the loop
 
@@ -111,13 +115,13 @@ Humans are a flag and an inbox, not a stage.
 Touchpoints by stage, with what the agent does while waiting and what happens with no answer:
 
 - Backlog, Decide: the human sets the top of the ranked list and kills items. The agent keeps discovering and scoring. The queue stays as ranked.
-- Plan, Answer: the human resolves open questions from /refine. The agent drafts slices for the confident parts. The item parks and its slot stays held.
+- Plan, Answer: the human resolves open questions from /refine. The agent drafts slices for the confident parts. The item parks, freeing its Plan slot.
 - Plan, Approve: the human signs off the plan and slices. The agent does nothing, since work is gated. Reminder, then escalate to the team lead.
-- Execute, Answer: the human unblocks a runner that hit ambiguity. The agent moves to another slice. The slice parks and the run is released.
+- Execute, Answer: the human unblocks a runner that hit ambiguity. The run is released and the agent may claim another slice, while the flagged slice keeps its slots. The slice parks.
 - Test, Verify: the human judges what automation cannot, such as UX feel. The agent runs remaining checks. The item stays red and does not advance.
 - Review, Approve: tiers 2 and 3, the human approves the PR after reading ranked findings. Tier 1, the human skims ranked findings and merges, since there is no auto-merge at tier 1. Tier 0, the human can veto the automated approval before the auto-merge. The fixer repairs CI, conflicts, and feedback, 3 passes max. Reminder, then reassign the reviewer.
 - Review, Answer: the human takes over after the fixer hits its cap, or settles a gap between predicted and effective tier. The agent holds the PR and logs the gap. Reminder, then reassign the reviewer.
-- Release, Verify: the human runs UAT and signs off. The agent prepares GTM drafts. The rollout does not start.
+- Release, Verify: tiers 2 and 3, the human runs UAT and signs off. The agent prepares GTM drafts. The rollout does not start.
 - Release, Approve: tiers 2 and 3, the human approves the rollout through a hook. Tiers 0 and 1, the human is notified and can veto, otherwise the rollout proceeds once review is approved. The agent holds at the gate. For tiers 2 and 3 the rollout does not start without approval.
 - Monitor, Decide: the human chooses to roll back, fix forward, or accept. The agent gathers evidence and proposes an option. On no answer, page on-call per policy.
 
@@ -133,16 +137,16 @@ Scrutiny follows risk. Four tiers.
 How a tier is set:
 
 - Predicted at plan time by /refine from blast radius, reversibility, and data or security surface. The highest signal wins. A human confirms it at plan approval.
-- The repo's rules compute the effective tier once, before review, and pass it to the reviewer as an input. The predicted tier is kept for comparison and logging only. A gap is logged and fed back to /refine.
+- The repo's approver computes the effective tier from the repo's rules during review and reports it with its verdict. It is computed again for every new head SHA and can only rise. The predicted tier is kept for comparison and logging only. A gap is logged and fed back to /refine.
 - If the effective tier is higher than predicted, or a finding is blocking, a human is pulled in. Tiers never drop mid-flight.
 - Earned trust (Default): a change type moves down a tier after a run of clean releases, for example 20 with no rollback and no escaped defects. A human grants the move and it is written down.
 - Lost trust: an incident traced to an auto-advanced change moves that change type up a tier immediately and goes into the backlog as a learning item.
 
 ## 7. Review: one contract, swappable reviewers
 
-Reviewer contract inputs: pr_ref (repo, PR number, head SHA), plan_ref (approved plan and acceptance criteria), effective_tier (computed once by the repo's rules, adapters never compute it), predicted_tier (logging only), and mode (shadow or active).
+Reviewer contract inputs: pr_ref (repo, PR number, head SHA), plan_ref (approved plan and acceptance criteria), and predicted_tier (logging only). An adapter may start a review or observe one the approver ran on its own GitHub events; either way the result is for that exact head SHA.
 
-Outputs: verdict (approve, comment, changes_needed, or human_review), findings (ranked by severity, each with file, line, and category), evidence_url (link to the audit record or dossier), and complete (false if any reviewer failed or the diff was truncated). If complete is false, the verdict becomes human_review. changes_needed triggers the fixer.
+Outputs: verdict (approve, comment, changes_needed, or human_review), effective_tier (from the repo's rules, as the approver applied them), mode (shadow or active, as the repo's rules set it), findings (ranked by severity, each with file, line, and category), evidence_url (link to the audit record or dossier), and complete (false if any reviewer failed or the diff was truncated). If complete is false, the verdict becomes human_review. changes_needed triggers the fixer. comment means not approved: the PR goes to a human per its tier. An adapter reports the approver's tier and mode and never computes its own; an approver that cannot report a tier is advisory only.
 
 Rules:
 
@@ -156,7 +160,7 @@ Adapters (roles):
 
 - Rules-gated approver: default approver. Rules decide, the AI only supplies findings, audit is replayable, and it is model-agnostic. Needs a per-repo rules file and a shadow soak.
 - Hosted AI code review: advisory reviewer. Low setup, adjustable depth. Check how its findings map to your categories.
-- Policy-file approver: candidate approver, shadow first. Approval policy kept in the repo. Check advisory-only mode, tier input, and data-retention fit (Unverified).
+- Policy-file approver: candidate approver, shadow first. Approval policy kept in the repo. Check advisory-only mode, tier output, and data-retention fit (Unverified).
 - Fixer agent: repairs, not a reviewer. Handles failing CI, conflicts, and review feedback. Check the iteration cap and slot accounting.
 - Human only: fallback, used for tiers 2 and 3.
 - Any other reviewer: advisory first. It can plug in once it passes a shadow bake-off against the current approver.
@@ -173,8 +177,8 @@ Tier to policy mapping (Default, a draft, written for a rules-gated approver wit
 Both models run at the same time through one claim protocol.
 
 - Cloud runners are dispatched work when the orchestrator claims a free slot on their behalf. Local runners pull work from the engineer's own agent tool.
-- Claim protocol calls: claim (checks the stage WIP limit, grants a lease with a runner id, takes a slot), get_context (returns the context bundle), heartbeat (renews the lease and records progress), flag (sets needs-human with an ask type and question, the slot is kept), submit (links the branch or PR and evidence, moves the item toward Test), release (frees the slot on abandon, lease expiry, or park).
-- Keeping the tracker current: state comes from runner reports (proposals only), from git and GitHub events (a branch name or a Work-Item commit trailer ties a PR to an item, and PR opened, CI results, and review events move the item), and from leases and timers (a missed heartbeat expires the lease, the item shows as stalled, and the slot is freed or flagged).
+- Claim protocol calls: claim (checks the stage WIP limit, grants a lease with a runner id, takes a slot), get_context (returns the context bundle), heartbeat (renews the lease and records progress), flag (sets needs-human with an ask type and question, the slot is kept), submit (links the branch or PR and evidence, moves the item toward Test), release (ends the run on abandon; the slice's slots are freed only when it parks).
+- Keeping the tracker current: state comes from runner reports (proposals only), from git and GitHub events (a branch name or a Work-Item commit trailer ties a PR to an item, and PR opened, CI results, and review events move the item), and from leases and timers (a missed heartbeat expires the lease and the slice becomes stalled, as defined in section 4).
 - Events are idempotent. A PR with no item is adopted by attaching or creating an item, flagged as untracked, and never rejected.
 - Gates rely on verified evidence such as CI and the repo's reviewer, never on a runner saying tests passed.
 - Local and cloud runs count against the same Execute limit. Local capacity is declared per person.
@@ -270,7 +274,7 @@ Rules:
 
 Default (validate):
 
-- WIP limits 10, 3, 5, 3, 2, per team. Validate by watching idle time and queue age for a month.
+- WIP limits 10, 3, 5, 8, 2, per team, and 2 PRs in review per approver. Validate by watching idle time and queue age for a month.
 - Fixer pass cap of 3. Track how often a third pass succeeds.
 - Tier downgrade after 20 clean releases. Compare with rollback and escape rates.
 - Unclaimed work timeout of one working day. Measure how long eligible items wait today.
@@ -280,16 +284,15 @@ Default (validate):
 
 Open (decide):
 
-- Per-approver Review cap.
 - Tier 0 hold length before auto-merge.
-- Heartbeat and lease length.
+- Heartbeat and lease length, and the stall timeout.
 - Bundle size budget.
 - Merge order across repos for items with several PRs.
 
 Unverified (check):
 
 - Per-tool support for MCP, hooks, and background sessions in each tool above.
-- Whether any hosted policy-file approver can run advisory-only, accept a tier as input, and fit data-retention constraints.
+- Whether any hosted policy-file approver can run advisory-only, report a tier, and fit data-retention constraints.
 
 ## 13. Build order and how to work
 

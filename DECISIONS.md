@@ -1,7 +1,7 @@
 # Decisions and open questions
 
 This file records what has been decided about Metronome, what the review of SPEC.md found, and what is still
-open. SPEC.md has not yet been changed to match the proposed fixes below; each one needs a decision first.
+open.
 
 ## Decided (2026-11-26)
 
@@ -24,6 +24,22 @@ open. SPEC.md has not yet been changed to match the proposed fixes below; each o
 - **GitHub events sit behind one interface:** polling `gh` locally and webhooks when hosted, with the same event
   shape.
 
+## Decided from the SPEC review (2026-11-26), now in SPEC.md
+
+- **WIP defaults:** Review 8, counting every slice from claim to approval, and a per-approver cap of 2 PRs ready
+  for review. The per-approver cap is the real throttle on reviewers; Execute 5 can now bind. (Finding 1.)
+- **Three waiting states:** flagged keeps its slots; stalled (lease expired) keeps its slots and another runner
+  can claim it; parked (an ask or a stall timed out) frees every slot. The stall timeout is Open. (Finding 2.)
+- **Tier and mode are outputs of the approver,** reported for an exact head SHA. The adapter may start the review
+  or observe one the approver ran on its own events. The tier is recomputed for every new head SHA and can only
+  rise. An approver that cannot report a tier is advisory only. (Findings 3 and 6.)
+- **Merging is the last step of Review.** When every PR of an item is approved, the item takes a Release slot and
+  its PRs merge. If Release is full, the last approved PR keeps its Review slot, so the wait is counted. UAT is
+  required only at tiers 2 and 3. (Finding 7, except merge order across repositories, which stays Open.)
+- **Default:** a `comment` verdict means not approved, and the PR goes to a human per its tier. (Finding 4.)
+- **Default for the proof of concept:** the backlog is a local file. Metronome reads items from it and writes the
+  items it proposes to a separate file. The general backlog contract is still to be written. (Finding 5.)
+
 ## How the existing tools fit
 
 - A runner is a scoring-stage sandbox playing a kapellmeister ensemble. `claim` starts the sandbox, the context
@@ -33,7 +49,10 @@ open. SPEC.md has not yet been changed to match the proposed fixes below; each o
 - Nothing pushes from inside a sandbox; a person publishes with `stage ship`. So `submit` records what the runner
   intends, and the item moves only when the GitHub event arrives.
 
-## Review of SPEC.md (2026-11-26): proposed fixes, not yet accepted
+## Review of SPEC.md (2026-11-26)
+
+The findings as raised. Findings 1–4, 6 and most of 7 are settled above; 5 is settled only for the proof of
+concept; 8–11 are still proposals.
 
 These affect the proof of concept:
 
