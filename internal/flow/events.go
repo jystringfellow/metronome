@@ -3,6 +3,7 @@ package flow
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"time"
 )
 
@@ -234,11 +235,22 @@ func (s *State) apply(e Event) error {
 		it.Status, it.HoldsPlan, it.PredictedTier = ItemExecuting, false, p.ConfirmedTier
 		it.ConfirmedTier = p.ConfirmedTier
 		for i, spec := range it.Proposal {
+			if i >= len(p.SliceIDs) {
+				return fmt.Errorf("plan approval for %s is missing slice %d", it.ID, i+1)
+			}
 			id := p.SliceIDs[i]
+			var after []string
+			for _, position := range spec.After {
+				if position < 1 || position > len(p.SliceIDs) || position > len(it.Proposal) {
+					return fmt.Errorf("slice %s lists invalid after position %d", id, position)
+				}
+				after = append(after, p.SliceIDs[position-1])
+			}
 			s.Slices[id] = &Slice{
 				Workstream: it.Workstream,
 				ID:         id, ItemID: it.ID, Seq: i + 1, Title: spec.Title, Repo: spec.Repo,
 				Criteria: spec.Criteria, Approvers: spec.Approvers, Status: SliceQueued,
+				After: after, WaitsOn: slices.Clone(after),
 			}
 			it.Slices = append(it.Slices, id)
 		}
@@ -460,6 +472,11 @@ func (s *State) apply(e Event) error {
 			return errUnknown("slice", p.SliceID)
 		}
 		sl.Status = SliceMerged
+		for _, sibling := range s.itemSlices(sl.ItemID) {
+			if slices.Contains(sibling.WaitsOn, sl.ID) {
+				sibling.WaitsOn = without(sibling.WaitsOn, sl.ID)
+			}
+		}
 		if p.FreesReview {
 			sl.HoldsReview = false
 		}

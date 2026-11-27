@@ -45,11 +45,12 @@ Backlog and plan:
   backlog sync [--workstream NAME] FILE  add ranked items (default workstream if omitted)
   plan start [--workstream NAME] [ITEM]  pull the top ready item with capacity
   plan propose ITEM --slices FILE [--approver WHO]
+                         a slice may list "after": [N] positions that merge first
   plan approve ITEM [--tier N]
   plan drop ITEM
 
 Runners (the connector operations):
-  next --runner ID [--workstream NAME] [--slice S] [--json]  claim the next slice and print its brief (next_work)
+  next --runner ID [--workstream NAME] [--slice S] [--json]  claim the next slice whose dependencies have merged and print its brief (next_work)
   run --runner ID [--workstream NAME] [--slice S] [--every 5m] -- CMD [ARGS...]  claim, run CMD with its brief, renew, submit or drop
   report RUN [--note TEXT]        renew the lease (heartbeat)
   ask (--run R | --item I | --slice S) --type ASK --question TEXT [--owner WHO]
@@ -310,6 +311,9 @@ func (a *app) board(ctx context.Context, args []string) error {
 }
 
 func sliceStatus(sl flow.Slice) string {
+	if len(sl.WaitsOn) > 0 {
+		return string(sl.Status) + " (waits on " + strings.Join(sl.WaitsOn, ", ") + ")"
+	}
 	if sl.Rework {
 		return string(sl.Status) + " (rework)"
 	}

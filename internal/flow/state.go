@@ -78,6 +78,7 @@ type SliceSpec struct {
 	Repo      string   `json:"repo"`
 	Criteria  []string `json:"criteria"`
 	Approvers []string `json:"approvers"`
+	After     []int    `json:"after,omitempty"`
 }
 
 type PR struct {
@@ -98,6 +99,8 @@ type Slice struct {
 	Repo               string      `json:"repo"`
 	Criteria           []string    `json:"criteria"`
 	Approvers          []string    `json:"approvers"`
+	After              []string    `json:"after,omitempty"`
+	WaitsOn            []string    `json:"waits_on,omitempty"`
 	Status             SliceStatus `json:"status"`
 	HoldsExecute       bool        `json:"holds_execute"`
 	HoldsReview        bool        `json:"holds_review"`
@@ -116,7 +119,34 @@ type Slice struct {
 }
 
 func (s *Slice) claimable() bool {
-	return s.Status == SliceQueued || s.Status == SliceStalled
+	return (s.Status == SliceQueued || s.Status == SliceStalled) && len(s.WaitsOn) == 0
+}
+
+type Dependency struct {
+	SliceID string      `json:"slice_id"`
+	Title   string      `json:"title"`
+	Status  SliceStatus `json:"status"`
+}
+
+func (s *State) Dependencies(sliceID string) []Dependency {
+	var deps []Dependency
+	if sl := s.Slices[sliceID]; sl != nil {
+		for _, id := range sl.After {
+			dep := s.Slices[id]
+			deps = append(deps, Dependency{SliceID: id, Title: dep.Title, Status: dep.Status})
+		}
+	}
+	return deps
+}
+
+func without(ids []string, id string) []string {
+	var remaining []string
+	for _, other := range ids {
+		if other != id {
+			remaining = append(remaining, other)
+		}
+	}
+	return remaining
 }
 
 type Run struct {

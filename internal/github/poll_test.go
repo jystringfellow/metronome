@@ -74,6 +74,59 @@ func slice(t *testing.T, eng *flow.Engine) flow.Slice {
 	return sl
 }
 
+func TestAClosedDependencyPRIsReportedForTheSlicesThatWait(t *testing.T) {
+	ctx := context.Background()
+	eng, err := flow.NewEngine(ctx, flow.DefaultConfig(), store.NewMemory(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := eng.SyncBacklog(ctx, "pat", "", "", []flow.BacklogItem{{Ref: "ACME-1", Title: "Migration", Owner: "pat"}})
+	must(t, result, err)
+	result, err = eng.StartPlan(ctx, "agent", "", "", "I1")
+	must(t, result, err)
+	result, err = eng.ProposePlan(ctx, "agent", "", "I1", []flow.SliceSpec{{Title: "Schema", Repo: "acme/app"}, {Title: "Backfill", Repo: "acme/app", After: []int{1}}}, "")
+	must(t, result, err)
+	result, err = eng.ApprovePlan(ctx, "pat", "", "I1", nil)
+	must(t, result, err)
+	result, err = eng.Claim(ctx, "laptop", "", "laptop", "", "")
+	must(t, result, err)
+	result, err = eng.Submit(ctx, "laptop", "", "R1", "metronome/I1.1")
+	must(t, result, err)
+	result, err = eng.PROpened(ctx, "github", "", "I1.1", "acme/app", 7, "aaa")
+	must(t, result, err)
+	snap := &github.Snapshot{Repo: "acme/app", Number: 7, HeadSHA: "aaa", State: github.PRClosed}
+	p := github.Poller{
+		Client: &api.Client{BaseURL: "http://metronome.test", Actor: "github", HTTP: &http.Client{Transport: handlerTransport{api.Handler(eng)}}},
+		Source: fakeGitHub{"acme/app metronome/I1.1": snap},
+	}
+	checkWaiting := func(want []string) {
+		t.Helper()
+		eng.View(func(s *flow.State) {
+			if got := s.Slices["I1.2"].WaitsOn; !slices.Equal(got, want) {
+				t.Fatalf("waits_on = %v, want %v", got, want)
+			}
+		})
+	}
+	before := len(eng.EventsAfter(0, 0))
+	poll, err := p.Once(ctx)
+	if err != nil || len(poll.Errors) != 0 || len(poll.Recorded) != 0 || len(eng.EventsAfter(0, 0)) != before || !strings.Contains(strings.Join(poll.Notes, "\n"), "I1.2 cannot be claimed: it waits on I1.1, whose PR acme/app#7 is closed on GitHub but not merged in Metronome; a person must decide") {
+		t.Fatalf("closed poll = %+v, err = %v", poll, err)
+	}
+	checkWaiting([]string{"I1.1"})
+	snap.State = github.PRMerged
+	poll, err = p.Once(ctx)
+	if err != nil || len(poll.Errors) != 0 || len(poll.Recorded) != 0 || len(eng.EventsAfter(0, 0)) != before || !strings.Contains(strings.Join(poll.Notes, "\n"), "I1.2 cannot be claimed: it waits on I1.1, whose PR acme/app#7 is merged on GitHub but not merged in Metronome; a person must decide") {
+		t.Fatalf("merge without a merger poll = %+v, err = %v", poll, err)
+	}
+	checkWaiting([]string{"I1.1"})
+	snap.State, snap.MergedBy = github.PRMerged, "pat"
+	poll, err = p.Once(ctx)
+	if err != nil || len(poll.Errors) != 0 || len(poll.Recorded) != 1 || poll.Recorded[0].Event != "merged" || strings.Contains(strings.Join(poll.Notes, "\n"), "cannot be claimed") {
+		t.Fatalf("merged poll = %+v, err = %v", poll, err)
+	}
+	checkWaiting(nil)
+}
+
 func TestPollingCarriesASliceFromSubmitToMerge(t *testing.T) {
 	eng, err := flow.NewEngine(context.Background(), flow.DefaultConfig(), store.NewMemory(), nil)
 	if err != nil {

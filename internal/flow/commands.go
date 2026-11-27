@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -178,6 +179,9 @@ func (e *Engine) ProposePlan(ctx context.Context, actor, requestID, itemID strin
 				return fail(CodeInvalid, "slice %d needs a title and a repo", i+1)
 			}
 		}
+		if err := validateAfter(slices); err != nil {
+			return err
+		}
 		if approver == "" {
 			approver = it.Owner
 		}
@@ -187,6 +191,64 @@ func (e *Engine) ProposePlan(ctx context.Context, actor, requestID, itemID strin
 			fmt.Sprintf("Approve the plan for %s (%d slices) and confirm tier %d?", it.Title, len(slices), it.PredictedTier))
 		return nil
 	})
+}
+
+func joinedNames(names []string) string {
+	if len(names) < 2 {
+		return strings.Join(names, "")
+	}
+	return strings.Join(names[:len(names)-1], ", ") + " and " + names[len(names)-1]
+}
+
+func validateAfter(specs []SliceSpec) error {
+	for i, spec := range specs {
+		seen := map[int]bool{}
+		for _, position := range spec.After {
+			switch {
+			case position < 1 || position > len(specs):
+				return fail(CodeInvalid, "slice %d lists after %d, but the plan has %d slices", i+1, position, len(specs))
+			case position == i+1:
+				return fail(CodeInvalid, "slice %d lists itself in after", i+1)
+			case seen[position]:
+				return fail(CodeInvalid, "slice %d lists %d in after more than once", i+1, position)
+			}
+			seen[position] = true
+		}
+	}
+	visited := make([]bool, len(specs))
+	active := make([]bool, len(specs))
+	var path []int
+	var visit func(int) error
+	visit = func(index int) error {
+		if active[index] {
+			var cycle []string
+			for _, step := range path {
+				if step == index || len(cycle) > 0 {
+					cycle = append(cycle, fmt.Sprint(step+1))
+				}
+			}
+			return fail(CodeInvalid, "slices %s wait on each other in a cycle; after must not loop", joinedNames(cycle))
+		}
+		if visited[index] {
+			return nil
+		}
+		active[index] = true
+		path = append(path, index)
+		for _, position := range specs[index].After {
+			if err := visit(position - 1); err != nil {
+				return err
+			}
+		}
+		path = path[:len(path)-1]
+		active[index], visited[index] = false, true
+		return nil
+	}
+	for index := range specs {
+		if err := visit(index); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (e *Engine) ApprovePlan(ctx context.Context, actor, requestID, itemID string, confirmedTier *int) (Result, error) {
@@ -330,17 +392,23 @@ func (e *Engine) Claim(ctx context.Context, actor, requestID, runnerID, workstre
 			if workstream != "" && chosen.Workstream != workstream {
 				return fail(CodeConflict, "slice %s is in workstream %s, not %s", chosen.ID, chosen.Workstream, workstream)
 			}
-			if !chosen.claimable() {
+			if chosen.Status != SliceQueued && chosen.Status != SliceStalled {
 				return fail(CodeConflict, "slice %s is %s, not claimable", chosen.ID, chosen.Status)
+			}
+			if len(chosen.WaitsOn) > 0 {
+				var waiting []string
+				for _, dep := range d.s.Dependencies(chosen.ID) {
+					if dep.Status != SliceMerged {
+						waiting = append(waiting, fmt.Sprintf("%s (%s)", dep.SliceID, dep.Status))
+					}
+				}
+				return fail(CodeConflict, "slice %s waits on %s to merge", chosen.ID, joinedNames(waiting))
 			}
 			if err := fits(chosen); err != nil {
 				return err
 			}
 		} else {
 			candidates := d.s.claimableByPriority()
-			if len(candidates) == 0 {
-				return fail(CodeNoWork, "no claimable slices")
-			}
 			var firstErr error
 			for _, sl := range candidates {
 				if workstream != "" && sl.Workstream != workstream {
@@ -357,7 +425,14 @@ func (e *Engine) Claim(ctx context.Context, actor, requestID, runnerID, workstre
 			}
 			if chosen == nil {
 				if firstErr == nil {
-					return fail(CodeNoWork, "no claimable slices")
+					var waiting []string
+					for _, sl := range d.s.Slices {
+						if len(sl.WaitsOn) > 0 && (workstream == "" || sl.Workstream == workstream) {
+							waiting = append(waiting, fmt.Sprintf("%s waits on %s to merge", sl.ID, joinedNames(sl.WaitsOn)))
+						}
+					}
+					sort.Strings(waiting)
+					return fail(CodeNoWork, "%s", strings.Join(append([]string{"no claimable slices"}, waiting...), "; "))
 				}
 				return firstErr
 			}

@@ -36,7 +36,12 @@ func (ht handlerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 
 func newEnv(t *testing.T) *env {
 	t.Helper()
-	eng, err := flow.NewEngine(context.Background(), flow.DefaultConfig(), store.NewMemory(), nil)
+	return newEnvWithStore(t, store.NewMemory())
+}
+
+func newEnvWithStore(t *testing.T, events flow.Store) *env {
+	t.Helper()
+	eng, err := flow.NewEngine(context.Background(), flow.DefaultConfig(), events, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,6 +129,52 @@ func TestWorkstreamsFromCommandLine(t *testing.T) {
 		t.Fatalf("board = %+v, err = %v", board, err)
 	}
 	if out := e.ok("pat", "board"); !strings.Contains(out, "workstream acme") || !strings.Contains(out, "workstream default") || !strings.Contains(out, "default item") {
+		t.Fatal(out)
+	}
+}
+
+func TestSliceDependenciesFromTheCommandLine(t *testing.T) {
+	db, err := store.OpenSQLite(context.Background(), filepath.Join(t.TempDir(), "metronome.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	e := newEnvWithStore(t, db)
+	backlog := e.file("backlog.json", api.BacklogRequest{Items: []flow.BacklogItem{{Ref: "ACME-1", Title: "Migration", Owner: "pat"}}})
+	e.ok("pat", "backlog", "sync", backlog)
+	e.ok("agent", "plan", "start")
+	specs := []flow.SliceSpec{{Title: "Schema", Repo: "acme/app", After: []int{2}}, {Title: "Backfill", Repo: "acme/app", After: []int{1}}}
+	cyclic := e.file("cyclic.json", specs)
+	if out, code := e.run("agent", "plan", "propose", "I1", "--slices", cyclic); code != 1 || !strings.Contains(out, "invalid") || !strings.Contains(out, "cycle") {
+		t.Fatal(out, code)
+	}
+	specs[0].After = nil
+	e.ok("agent", "plan", "propose", "I1", "--slices", e.file("slices.json", specs))
+	e.ok("pat", "plan", "approve", "I1")
+	board := e.board()
+	if sl := board.Slices[1]; sl.ID != "I1.2" || len(sl.After) != 1 || sl.After[0] != "I1.1" || len(sl.WaitsOn) != 1 || sl.WaitsOn[0] != "I1.1" {
+		t.Fatalf("waiting slice = %+v", sl)
+	}
+	if out := e.ok("pat", "board"); !strings.Contains(out, "queued (waits on I1.1)") {
+		t.Fatal(out)
+	}
+	if out := e.ok("laptop", "next", "--runner", "laptop"); !strings.Contains(out, "claimed slice I1.1") {
+		t.Fatal(out)
+	}
+	if out, code := e.run("laptop", "next", "--runner", "laptop"); code != 1 || !strings.Contains(out, "no_work") || !strings.Contains(out, "I1.2 waits on I1.1") {
+		t.Fatal(out, code)
+	}
+	if out, code := e.run("laptop", "next", "--runner", "laptop", "--slice", "I1.2"); code != 1 || !strings.Contains(out, "conflict") || !strings.Contains(out, "waits on I1.1 (running)") {
+		t.Fatal(out, code)
+	}
+	e.ok("laptop", "submit", "R1", "--branch", "metronome/I1.1")
+	e.ok("github", "github", "pr-opened", "--slice", "I1.1", "--repo", "acme/app", "--number", "7", "--head", "abc")
+	e.ok("github", "github", "merged", "--slice", "I1.1", "--by", "pat")
+	e = newEnvWithStore(t, db)
+	if out := e.ok("laptop", "next", "--runner", "laptop"); !strings.Contains(out, "claimed slice I1.2") {
+		t.Fatal(out)
+	}
+	if out := e.ok("pat", "help"); !strings.Contains(out, `"after"`) {
 		t.Fatal(out)
 	}
 }

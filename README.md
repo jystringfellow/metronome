@@ -24,13 +24,16 @@ The approver cap remains global per person. Existing logs and backlog syncs with
 Ranks are local to each workstream. Without a filter, planning and claims choose eligible work across
 workstreams, and the board shows a section for each workstream.
 
+A slice may list `after`, the 1-based positions of slices of the same item that must merge first.
+Until they do, claims skip it, and `board` shows what it waits on.
+
 ```sh
 go build -o metronome ./cmd/metronome
 ./metronome serve --db metronome.db &
 
 ./metronome backlog sync backlog.json        # {"items":[{"ref":"ACME-1","title":"…","intent":"…","owner":"pat","predicted_tier":1}]}
 ./metronome plan start
-./metronome plan propose I1 --slices slices.json   # [{"title":"…","repo":"acme/app","criteria":["…"],"approvers":["rev"]}]
+./metronome plan propose I1 --slices slices.json   # [{"title":"…","repo":"acme/app","criteria":["…"],"approvers":["rev"]},{"title":"…","repo":"acme/app","after":[1]}]
 ./metronome --as pat plan approve I1
 
 ./metronome next --runner laptop             # claims a slice and prints its brief: run R1, lease 15 minutes
