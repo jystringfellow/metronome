@@ -163,6 +163,42 @@ These can wait:
 Wording: section 1's "one shared tracker" may read better as "one shared flow record", since Metronome owns flow
 state (slots, leases, flags, gate evidence) and not the backlog.
 
+## Proof-of-concept choices (2026-11-26), to confirm
+
+Choices made while building step 1 where SPEC.md was silent. Each is easy to change.
+
+- **Placeholder timings:** lease 15 minutes, stall timeout 2 hours, ask timeout 24 hours. All three are still
+  Open in SPEC.md section 12.
+- **Only Answer asks park on timeout.** SPEC.md section 5 has Plan approvals escalate, Review approvals reassign
+  and Verify asks keep the item red. Escalation and reassignment are not built yet, so those asks stay open past
+  their timeout.
+- **An answered ask leaves a slice stalled:** it keeps its slots, and the next claim resumes it.
+- **Abandoning a run (`drop`) leaves the slice stalled too,** per the decided waiting states.
+- **Claim order:** rework first, then slices already holding slots, then parked slices returned to the front, then
+  new slices by backlog rank.
+- **Moving into review needs green checks on the PR's head.** The per-approver cap is shown on the board but not
+  enforced, because a person can mark a PR ready on GitHub at any time.
+- **An approval must name the PR's current head SHA,** or it is refused as stale. What happens when an approved
+  PR's head changes is not built; it needs the merge decisions in findings 8 and 9.
+- **The expedite slot and untracked-PR adoption are not built yet.**
+- **The GitHub poller is level-triggered.** `metronome github poll` compares what GitHub shows now for each
+  submitted slice's branch with what Metronome has recorded, and records only what differs, through the same API
+  calls a person would make. Each slice carries a version that every event on it raises, and request IDs combine
+  the GitHub fact with that version. A repeated poll records nothing, and a fact that comes back (a head pushed
+  away and back, a check that fails and passes again) is still recorded. A webhook, when hosted, only needs to
+  trigger the same comparison for one PR. It reads GitHub through the `gh` command, as whoever `gh` is signed in as.
+- **What counts in review:** only reviews of the PR's current head count, each reviewer's latest review wins, a
+  dismissed review counts as none, and a comment never approves. When a slice names approvers, only their reviews
+  count; otherwise anyone's does. An approval also needs green checks on the head. A change request sends the
+  slice back once; while it stands on the same head, the poller says it is waiting for that reviewer.
+- **Checks:** only the latest run of each check on the head counts, and the worst of those decides. Skipped and
+  neutral runs pass; cancelled runs fail. A head with no checks is never green, so a repository without CI keeps
+  its slices out of review. A draft PR never moves into review.
+- **Reported, not recorded:** a PR closed without merging, a merge before Metronome recorded an approval, a head
+  that moves after approval, and a closed or merged PR on the branch that Metronome never recorded for the slice,
+  such as one left from an earlier use of the branch name. The engine has no rule for the merge and head cases
+  yet (findings 8 and 9).
+
 ## Verified on the development machine
 
 - 2026-11-26: the `codex`, `copilot` and `agy` command-line tools are installed alongside Claude Code. Each one's
@@ -177,3 +213,5 @@ Everything section 12 of SPEC.md marks Open or Unverified, plus:
 - When a workstream's own backlog and its subscriptions compete for one free slot, which goes first.
 - Which other kinds of identity link to support, such as agent attribution tools.
 - How the OIDC provider is configured for a self-hosted install.
+- A check failure on a slice already in review leaves it in review; only the approval waits. Whether it should
+  go back to the fixer.
