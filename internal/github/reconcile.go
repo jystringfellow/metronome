@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"slices"
 	"sort"
+	"strings"
 
 	"github.com/jystringfellow/metronome/internal/api"
 	"github.com/jystringfellow/metronome/internal/flow"
@@ -68,68 +69,71 @@ func Reconcile(sl flow.Slice, snap *Snapshot) (actions []Action, notes []string)
 		notes = append(notes, sl.ID+" "+pr+": "+fmt.Sprintf(format, args...))
 	}
 
-	if snap.State == PRClosed {
+	known := sl.PR != nil && sl.PR.Repo == snap.Repo && sl.PR.Number == snap.Number
+	if snap.State != PROpen && !known {
+		note("the only PR on branch %s is %s, which Metronome never recorded for this slice; nothing recorded", sl.Branch, strings.ToLower(string(snap.State)))
+		return actions, notes
+	}
+	switch snap.State {
+	case PRClosed:
 		note("closed without merging; nothing recorded")
+		return actions, notes
+	case PRMerged:
+		if sl.Status == flow.SliceApproved {
+			add("merged", "merged", api.GitHubRequest{SliceID: sl.ID})
+		} else {
+			note("merged while %s in Metronome; nothing recorded", sl.Status)
+		}
 		return actions, notes
 	}
 
 	status := sl.Status
-	head := ""
-	green := false
-	if sl.PR != nil {
-		head, green = sl.PR.HeadSHA, sl.PR.ChecksGreen
+	var recorded flow.PR
+	if known {
+		recorded = *sl.PR
 	}
-
-	if status == flow.SliceApproved && head != "" && head != snap.HeadSHA && snap.State == PROpen {
-		note("head moved from %s to %s after approval; not recorded", short(head), short(snap.HeadSHA))
+	if status == flow.SliceApproved {
+		if recorded.HeadSHA != snap.HeadSHA {
+			note("head moved from %s to %s after approval; not recorded", short(recorded.HeadSHA), short(snap.HeadSHA))
+		}
 		return actions, notes
 	}
-	if sl.PR == nil || status == flow.SliceSubmitted || (head != snap.HeadSHA && (status == flow.SlicePROpen || status == flow.SliceInReview)) {
-		add("pr-opened", fmt.Sprintf("opened:%s:s%d", snap.HeadSHA, sl.Submits), base)
+	if !known || status == flow.SliceSubmitted || recorded.HeadSHA != snap.HeadSHA {
+		add("pr-opened", fmt.Sprintf("opened:%s:v%d", snap.HeadSHA, sl.Version), base)
 		if status == flow.SliceSubmitted {
 			status = flow.SlicePROpen
 		}
-		head, green = snap.HeadSHA, false
+		recorded = flow.PR{Repo: snap.Repo, Number: snap.Number, HeadSHA: snap.HeadSHA}
 	}
 
-	if snap.State == PRMerged {
-		add("merged", "merged", api.GitHubRequest{SliceID: sl.ID})
-		if status != flow.SliceApproved {
-			note("merged while %s in Metronome", status)
-		}
-		return actions, notes
-	}
-
-	if status == flow.SlicePROpen || status == flow.SliceInReview {
-		switch snap.HeadChecks {
-		case ChecksSuccess, ChecksFailure:
-			success := snap.HeadChecks == ChecksSuccess
+	switch snap.HeadChecks {
+	case ChecksSuccess, ChecksFailure:
+		success := snap.HeadChecks == ChecksSuccess
+		if !recorded.ChecksRecorded || recorded.ChecksGreen != success {
 			req := base
 			req.Success = success
-			add("checks", fmt.Sprintf("checks:%s:%s:s%d", snap.HeadSHA, snap.HeadChecks, sl.Submits), req)
-			green = success
-			if !success && status == flow.SlicePROpen {
-				return actions, notes
-			}
-		case ChecksNone:
-			note("no checks reported on %s; a slice moves into review only on green checks", short(snap.HeadSHA))
+			add("checks", fmt.Sprintf("checks:%s:%s:v%d", snap.HeadSHA, snap.HeadChecks, sl.Version), req)
+			recorded.ChecksRecorded, recorded.ChecksGreen = true, success
 		}
-	}
-
-	if status == flow.SlicePROpen && green {
-		if snap.Draft {
+		if !success && status == flow.SlicePROpen {
 			return actions, notes
 		}
-		add("ready-for-review", fmt.Sprintf("ready:%s:s%d", snap.HeadSHA, sl.Submits), api.GitHubRequest{SliceID: sl.ID})
+	case ChecksNone:
+		note("no checks reported on %s; a slice moves into review only on green checks", short(snap.HeadSHA))
+	}
+	green := recorded.ChecksRecorded && recorded.ChecksGreen
+
+	if status == flow.SlicePROpen && green && !snap.Draft {
+		add("ready-for-review", fmt.Sprintf("ready:%s:v%d", snap.HeadSHA, sl.Version), api.GitHubRequest{SliceID: sl.ID})
 		status = flow.SliceInReview
 	}
-
 	if status != flow.SliceInReview {
 		return actions, notes
 	}
+
 	latest := latestVerdicts(snap.Reviews, sl.Approvers)
 	for _, r := range latest {
-		if r.State == ReviewChangesRequested {
+		if r.State == ReviewChangesRequested && r.CommitSHA == snap.HeadSHA {
 			add("changes-requested", "review:"+r.ID, api.GitHubRequest{SliceID: sl.ID, By: r.Author})
 			return actions, notes
 		}
@@ -148,7 +152,7 @@ func Reconcile(sl flow.Slice, snap *Snapshot) (actions []Action, notes []string)
 		}
 		req := base
 		req.By = r.Author
-		add("approved", "review:"+r.ID, req)
+		add("approved", fmt.Sprintf("review:%s:v%d", r.ID, sl.Version), req)
 		return actions, notes
 	}
 	return actions, notes

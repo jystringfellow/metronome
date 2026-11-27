@@ -116,18 +116,22 @@ Choices made while building step 1 where SPEC.md was silent. Each is easy to cha
   PR's head changes is not built; it needs the merge decisions in findings 8 and 9.
 - **The expedite slot and untracked-PR adoption are not built yet.**
 - **The GitHub poller is level-triggered.** `metronome github poll` compares what GitHub shows now for each
-  submitted slice's branch with what Metronome has recorded, and records what is missing through the same API
-  calls a person would make. Request IDs come from GitHub facts (the head SHA, the check result, the review ID)
-  and the slice's submit count, so a repeated poll records nothing new. A webhook, when hosted, only needs to
+  submitted slice's branch with what Metronome has recorded, and records only what differs, through the same API
+  calls a person would make. Each slice carries a version that every event on it raises, and request IDs combine
+  the GitHub fact with that version. A repeated poll records nothing, and a fact that comes back (a head pushed
+  away and back, a check that fails and passes again) is still recorded. A webhook, when hosted, only needs to
   trigger the same comparison for one PR. It reads GitHub through the `gh` command, as whoever `gh` is signed in as.
-- **What counts in review:** each reviewer's latest review wins, a dismissed review counts as none, and a comment
-  never approves. When a slice names approvers, only their reviews count; otherwise anyone's does. An approval
-  counts only for the PR's current head and only once the checks on that head are green. Any change request
-  from a counted reviewer sends the slice back.
-- **Checks:** the worst result on the head commit decides. Skipped and neutral runs pass. A head with no checks
-  is never green, so a repository without CI keeps its slices out of review. A draft PR never moves into review.
-- **Reported, not recorded:** a PR closed without merging, a head that moves after approval, and a merge before
-  Metronome recorded an approval. The engine has no rule for the first two yet (findings 8 and 9).
+- **What counts in review:** only reviews of the PR's current head count, each reviewer's latest review wins, a
+  dismissed review counts as none, and a comment never approves. When a slice names approvers, only their reviews
+  count; otherwise anyone's does. An approval also needs green checks on the head. A change request sends the
+  slice back once; while it stands on the same head, the poller says it is waiting for that reviewer.
+- **Checks:** only the latest run of each check on the head counts, and the worst of those decides. Skipped and
+  neutral runs pass; cancelled runs fail. A head with no checks is never green, so a repository without CI keeps
+  its slices out of review. A draft PR never moves into review.
+- **Reported, not recorded:** a PR closed without merging, a merge before Metronome recorded an approval, a head
+  that moves after approval, and a closed or merged PR on the branch that Metronome never recorded for the slice,
+  such as one left from an earlier use of the branch name. The engine has no rule for the merge and head cases
+  yet (findings 8 and 9).
 
 ## Verified on the development machine
 
@@ -140,3 +144,5 @@ Everything section 12 of SPEC.md marks Open or Unverified, plus:
 
 - The repository for the proof-of-concept pilot, and the mapping from its approver's rules to tiers 0 to 3.
 - How the local service authenticates to the approver's results.
+- A check failure on a slice already in review leaves it in review; only the approval waits. Whether it should
+  go back to the fixer.

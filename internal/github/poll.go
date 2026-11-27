@@ -41,6 +41,9 @@ func (p Poller) Once(ctx context.Context) (PollResult, error) {
 				res.Errors = append(res.Errors, a.String()+": "+err.Error())
 				break
 			}
+			if out.Duplicate && a.Event == "changes-requested" {
+				res.Notes = append(res.Notes, a.Request.SliceID+": the change request from "+a.Request.By+" on this head was already acted on; waiting for them to review again")
+			}
 			if !out.Duplicate && len(out.Events) > 0 {
 				res.Recorded = append(res.Recorded, a)
 			}

@@ -12,13 +12,18 @@ import (
 var t0 = time.Date(2026, 11, 26, 12, 0, 0, 0, time.UTC)
 
 func submitted() flow.Slice {
-	return flow.Slice{ID: "I1.1", Repo: "acme/app", Branch: "metronome/I1.1", Status: flow.SliceSubmitted, Submits: 1, Approvers: []string{"rev"}}
+	return flow.Slice{ID: "I1.1", Repo: "acme/app", Branch: "metronome/I1.1", Status: flow.SliceSubmitted, Version: 3, Approvers: []string{"rev"}}
 }
 
 func inReview(head string) flow.Slice {
 	sl := submitted()
 	sl.Status = flow.SliceInReview
-	sl.PR = &flow.PR{Repo: "acme/app", Number: 7, HeadSHA: head, ChecksGreen: true}
+	sl.PR = &flow.PR{Repo: "acme/app", Number: 7, HeadSHA: head, ChecksGreen: true, ChecksRecorded: true}
+	return sl
+}
+
+func reviewers(sl flow.Slice, names ...string) flow.Slice {
+	sl.Approvers = names
 	return sl
 }
 
@@ -61,18 +66,23 @@ func TestReconcile(t *testing.T) {
 		{"failed checks stop the poll at the failure", submitted(), open("aaa", ChecksFailure), []string{"pr-opened", "checks"}, ""},
 		{"a PR with no checks never moves into review", submitted(), open("aaa", ChecksNone), []string{"pr-opened"}, "no checks reported"},
 		{"no PR for the branch records nothing", submitted(), nil, nil, ""},
-		{"an approval on the head from a named approver approves", inReview("aaa"), open("aaa", ChecksSuccess, review("r1", "rev", ReviewApproved, "aaa", 1)), []string{"checks", "approved"}, ""},
-		{"an approval from someone not named is ignored", inReview("aaa"), open("aaa", ChecksSuccess, review("r1", "other", ReviewApproved, "aaa", 1)), []string{"checks"}, ""},
-		{"a comment is never an approval", inReview("aaa"), open("aaa", ChecksSuccess, review("r1", "rev", ReviewCommented, "aaa", 1)), []string{"checks"}, ""},
-		{"an approval of an older commit does not count", inReview("aaa"), open("aaa", ChecksSuccess, review("r1", "rev", ReviewApproved, "old", 1)), []string{"checks"}, "is for old"},
-		{"a later change request outweighs an earlier approval", inReview("aaa"), open("aaa", ChecksSuccess, review("r1", "rev", ReviewApproved, "aaa", 1), review("r2", "rev", ReviewChangesRequested, "aaa", 2)), []string{"checks", "changes-requested"}, ""},
-		{"a later approval replaces an earlier change request", inReview("aaa"), open("aaa", ChecksSuccess, review("r1", "rev", ReviewChangesRequested, "aaa", 1), review("r2", "rev", ReviewApproved, "aaa", 2)), []string{"checks", "approved"}, ""},
-		{"a dismissed review no longer counts", inReview("aaa"), open("aaa", ChecksSuccess, review("r1", "rev", ReviewChangesRequested, "aaa", 1), review("r2", "rev", ReviewDismissed, "aaa", 2)), []string{"checks"}, ""},
+		{"checks already recorded for the head are not recorded again", inReview("aaa"), open("aaa", ChecksSuccess), nil, ""},
+		{"a check result that changes on the same head is recorded", inReview("aaa"), open("aaa", ChecksFailure), []string{"checks"}, ""},
+		{"an approval on the head from a named approver approves", inReview("aaa"), open("aaa", ChecksSuccess, review("r1", "rev", ReviewApproved, "aaa", 1)), []string{"approved"}, ""},
+		{"an approval from someone not named is ignored", inReview("aaa"), open("aaa", ChecksSuccess, review("r1", "other", ReviewApproved, "aaa", 1)), nil, ""},
+		{"a comment is never an approval", inReview("aaa"), open("aaa", ChecksSuccess, review("r1", "rev", ReviewCommented, "aaa", 1)), nil, ""},
+		{"an approval of an older commit does not count", inReview("aaa"), open("aaa", ChecksSuccess, review("r1", "rev", ReviewApproved, "old", 1)), nil, "is for old"},
+		{"a later change request outweighs an earlier approval", inReview("aaa"), open("aaa", ChecksSuccess, review("r1", "rev", ReviewApproved, "aaa", 1), review("r2", "rev", ReviewChangesRequested, "aaa", 2)), []string{"changes-requested"}, ""},
+		{"a later approval replaces an earlier change request", inReview("aaa"), open("aaa", ChecksSuccess, review("r1", "rev", ReviewChangesRequested, "aaa", 1), review("r2", "rev", ReviewApproved, "aaa", 2)), []string{"approved"}, ""},
+		{"a dismissed review no longer counts", inReview("aaa"), open("aaa", ChecksSuccess, review("r1", "rev", ReviewChangesRequested, "aaa", 1), review("r2", "rev", ReviewDismissed, "aaa", 2)), nil, ""},
+		{"a change request on an older head does not hold the slice", reviewers(inReview("bbb"), "rev", "sam"), open("bbb", ChecksSuccess, review("r1", "rev", ReviewChangesRequested, "aaa", 1), review("r2", "sam", ReviewApproved, "bbb", 2)), []string{"approved"}, ""},
 		{"a new head in review is recorded before its checks and approval", inReview("aaa"), open("bbb", ChecksSuccess, review("r1", "rev", ReviewApproved, "bbb", 1)), []string{"pr-opened", "checks", "approved"}, ""},
+		{"a head pushed back to an earlier commit is recorded again", inReview("bbb"), open("aaa", ChecksSuccess, review("r1", "rev", ReviewApproved, "aaa", 1)), []string{"pr-opened", "checks", "approved"}, ""},
 		{"an approval waits for green checks on a new head", inReview("aaa"), open("bbb", ChecksPending, review("r1", "rev", ReviewApproved, "bbb", 1)), []string{"pr-opened"}, "not green"},
+		{"a replacement PR on the same head is recorded", inReview("aaa"), &Snapshot{Repo: "acme/app", Number: 9, HeadSHA: "aaa", State: PROpen, HeadChecks: ChecksSuccess}, []string{"pr-opened", "checks"}, ""},
 		{"a merge after approval records the merge", approvedSlice, merged, []string{"merged"}, ""},
-		{"a merge before approval is recorded and reported", inReview("aaa"), merged, []string{"merged"}, "merged while in_review"},
-		{"a merge Metronome never saw opened records both", submitted(), merged, []string{"pr-opened", "merged"}, ""},
+		{"a merge before approval is reported, not recorded", inReview("aaa"), merged, nil, "merged while in_review"},
+		{"an old merged PR on a reused branch is ignored", submitted(), merged, nil, "never recorded"},
 		{"a PR closed without merging records nothing", inReview("aaa"), closed, nil, "closed without merging"},
 		{"a head that moves after approval is reported, not recorded", approvedSlice, open("bbb", ChecksSuccess), nil, "after approval"},
 	}
@@ -93,24 +103,23 @@ func TestAnyReviewerCountsWhenTheSliceNamesNoApprovers(t *testing.T) {
 	sl := inReview("aaa")
 	sl.Approvers = nil
 	actions, _ := Reconcile(sl, open("aaa", ChecksSuccess, review("r1", "anyone", ReviewApproved, "aaa", 1)))
-	if got := events(actions); !slices.Equal(got, []string{"checks", "approved"}) {
+	if got := events(actions); !slices.Equal(got, []string{"approved"}) {
 		t.Fatalf("events = %v", got)
 	}
-	if actions[1].Request.By != "anyone" {
-		t.Fatalf("approved by %q", actions[1].Request.By)
+	if actions[0].Request.By != "anyone" {
+		t.Fatalf("approved by %q", actions[0].Request.By)
 	}
 }
 
-func TestRequestIDsChangeWithEachSubmitSoResubmittingTheSameHeadIsRecorded(t *testing.T) {
-	first := submitted()
-	again := submitted()
-	again.Submits = 2
-	again.PR = &flow.PR{Repo: "acme/app", Number: 7, HeadSHA: "aaa"}
-	a1, _ := Reconcile(first, open("aaa", ChecksSuccess))
-	a2, _ := Reconcile(again, open("aaa", ChecksSuccess))
+func TestRequestIDsChangeWithTheSliceVersionSoTheSameFactCanBeRecordedAgain(t *testing.T) {
+	earlier := submitted()
+	later := submitted()
+	later.Version = earlier.Version + 4
+	a1, _ := Reconcile(earlier, open("aaa", ChecksSuccess))
+	a2, _ := Reconcile(later, open("aaa", ChecksSuccess))
 	for i := range a1 {
 		if a1[i].RequestID == a2[i].RequestID {
-			t.Fatalf("%s request ID %q repeats across submits", a1[i].Event, a1[i].RequestID)
+			t.Fatalf("%s request ID %q repeats across slice versions", a1[i].Event, a1[i].RequestID)
 		}
 	}
 }

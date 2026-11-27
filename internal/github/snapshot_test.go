@@ -46,11 +46,11 @@ func TestParsePRListWithNoPRs(t *testing.T) {
 func TestHeadChecksTakeTheWorstResult(t *testing.T) {
 	cases := map[string]Checks{
 		`[]`: ChecksNone,
-		`[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"},{"__typename":"CheckRun","status":"IN_PROGRESS"}]`: ChecksPending,
-		`[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"FAILURE"},{"__typename":"CheckRun","status":"IN_PROGRESS"}]`: ChecksFailure,
-		`[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"CANCELLED"}]`:                                                ChecksFailure,
-		`[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"NEUTRAL"},{"__typename":"StatusContext","state":"PENDING"}]`: ChecksPending,
-		`[{"__typename":"StatusContext","state":"ERROR"}]`:                                                                         ChecksFailure,
+		`[{"__typename":"CheckRun","name":"c1","status":"COMPLETED","conclusion":"SUCCESS"},{"__typename":"CheckRun","name":"c2","status":"IN_PROGRESS"}]`:    ChecksPending,
+		`[{"__typename":"CheckRun","name":"c3","status":"COMPLETED","conclusion":"FAILURE"},{"__typename":"CheckRun","name":"c4","status":"IN_PROGRESS"}]`:    ChecksFailure,
+		`[{"__typename":"CheckRun","name":"c5","status":"COMPLETED","conclusion":"CANCELLED"}]`:                                                               ChecksFailure,
+		`[{"__typename":"CheckRun","name":"c6","status":"COMPLETED","conclusion":"NEUTRAL"},{"__typename":"StatusContext","context":"s7","state":"PENDING"}]`: ChecksPending,
+		`[{"__typename":"StatusContext","context":"s8","state":"ERROR"}]`:                                                                                     ChecksFailure,
 	}
 	for rollup, want := range cases {
 		data := `[{"number":1,"headRefOid":"h","state":"OPEN","updatedAt":"2026-11-26T09:00:00Z","reviews":[],"statusCheckRollup":` + rollup + `}]`
@@ -76,5 +76,20 @@ func TestGHAsksForThePRsOfOneBranch(t *testing.T) {
 	want := []string{"pr", "list", "--repo", "acme/app", "--head", "metronome/I1.1", "--state", "all", "--limit", "10", "--json", prFields}
 	if !slices.Equal(got, want) {
 		t.Fatalf("gh %v", got)
+	}
+}
+
+func TestOnlyTheLatestRunOfEachCheckCounts(t *testing.T) {
+	data := `[{"number":1,"headRefOid":"h","state":"OPEN","updatedAt":"2026-11-26T09:00:00Z","reviews":[],"statusCheckRollup":[
+	  {"__typename":"CheckRun","workflowName":"ci","name":"test","status":"COMPLETED","conclusion":"CANCELLED","startedAt":"2026-11-26T09:00:00Z"},
+	  {"__typename":"CheckRun","workflowName":"ci","name":"test","status":"COMPLETED","conclusion":"SUCCESS","startedAt":"2026-11-26T09:05:00Z"},
+	  {"__typename":"CheckRun","workflowName":"lint","name":"test","status":"COMPLETED","conclusion":"SUCCESS","startedAt":"2026-11-26T09:00:00Z"}
+	]}]`
+	snap, err := ParsePRList("acme/app", []byte(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.HeadChecks != ChecksSuccess {
+		t.Fatalf("a cancelled run superseded by a passing one gives %s", snap.HeadChecks)
 	}
 }

@@ -101,10 +101,14 @@ type ghPR struct {
 		Commit      struct{ Oid string }   `json:"commit"`
 	} `json:"reviews"`
 	StatusCheckRollup []struct {
-		Typename   string `json:"__typename"`
-		Status     string `json:"status"`
-		Conclusion string `json:"conclusion"`
-		State      string `json:"state"`
+		Typename     string    `json:"__typename"`
+		Name         string    `json:"name"`
+		WorkflowName string    `json:"workflowName"`
+		Context      string    `json:"context"`
+		Status       string    `json:"status"`
+		Conclusion   string    `json:"conclusion"`
+		State        string    `json:"state"`
+		StartedAt    time.Time `json:"startedAt"`
 	} `json:"statusCheckRollup"`
 }
 
@@ -131,8 +135,20 @@ func ParsePRList(repo string, data []byte) (*Snapshot, error) {
 		}
 		snap.Reviews = append(snap.Reviews, Review{ID: id, Author: r.Author.Login, State: r.State, CommitSHA: r.Commit.Oid, SubmittedAt: r.SubmittedAt})
 	}
+	type run struct {
+		result  Checks
+		started time.Time
+	}
+	latest := map[string]run{}
 	for _, c := range p.StatusCheckRollup {
-		snap.HeadChecks = worse(snap.HeadChecks, checkResult(c.Typename, c.Status, c.Conclusion, c.State))
+		key := c.Typename + "/" + c.WorkflowName + "/" + c.Name + "/" + c.Context
+		r := run{checkResult(c.Typename, c.Status, c.Conclusion, c.State), c.StartedAt}
+		if prev, ok := latest[key]; !ok || !r.started.Before(prev.started) {
+			latest[key] = r
+		}
+	}
+	for _, r := range latest {
+		snap.HeadChecks = worse(snap.HeadChecks, r.result)
 	}
 	return snap, nil
 }

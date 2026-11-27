@@ -201,3 +201,62 @@ func TestAResubmitOnTheSameHeadAfterFailedChecksStillReachesReview(t *testing.T)
 		t.Fatalf("after the resubmit and a green rerun: %+v (recorded %v, notes %v)", sl, res.Recorded, res.Notes)
 	}
 }
+
+func TestAHeadPushedAwayAndBackInReviewCanStillBeApproved(t *testing.T) {
+	eng, err := flow.NewEngine(context.Background(), flow.DefaultConfig(), store.NewMemory(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	submittedSlice(t, eng)
+	key := "acme/app metronome/I1.1"
+	gh := fakeGitHub{key: {Repo: "acme/app", Number: 7, HeadSHA: "aaa", State: github.PROpen, HeadChecks: github.ChecksSuccess}}
+	p := github.Poller{
+		Client: &api.Client{BaseURL: "http://metronome.test", Actor: "github", HTTP: &http.Client{Transport: handlerTransport{api.Handler(eng)}}},
+		Source: gh,
+	}
+	poll := func() github.PollResult {
+		t.Helper()
+		res, err := p.Once(context.Background())
+		if err != nil || len(res.Errors) > 0 {
+			t.Fatalf("poll: %v %v", err, res.Errors)
+		}
+		return res
+	}
+	poll()
+	gh[key].HeadSHA = "bbb"
+	poll()
+	gh[key].HeadSHA = "aaa"
+	gh[key].Reviews = []github.Review{{ID: "PRR_1", Author: "rev", State: github.ReviewApproved, CommitSHA: "aaa", SubmittedAt: time.Now()}}
+	res := poll()
+	if sl := slice(t, eng); sl.Status != flow.SliceApproved || sl.PR.HeadSHA != "aaa" {
+		t.Fatalf("after the head came back and was approved: %+v (recorded %v, notes %v)", sl, res.Recorded, res.Notes)
+	}
+}
+
+func TestAMergeBeforeApprovalLeavesTheSliceAsItWas(t *testing.T) {
+	eng, err := flow.NewEngine(context.Background(), flow.DefaultConfig(), store.NewMemory(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	submittedSlice(t, eng)
+	key := "acme/app metronome/I1.1"
+	gh := fakeGitHub{key: {Repo: "acme/app", Number: 7, HeadSHA: "aaa", State: github.PROpen, HeadChecks: github.ChecksPending}}
+	p := github.Poller{
+		Client: &api.Client{BaseURL: "http://metronome.test", Actor: "github", HTTP: &http.Client{Transport: handlerTransport{api.Handler(eng)}}},
+		Source: gh,
+	}
+	if _, err := p.Once(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	gh[key].State = github.PRMerged
+	res, err := p.Once(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sl := slice(t, eng); sl.Status != flow.SlicePROpen {
+		t.Fatalf("a merge before approval changed the slice: %+v", sl)
+	}
+	if len(res.Notes) == 0 || !strings.Contains(res.Notes[0], "merged while pr_open") {
+		t.Fatalf("notes = %v", res.Notes)
+	}
+}

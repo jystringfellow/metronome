@@ -257,6 +257,7 @@ func (s *State) apply(e Event) error {
 		}
 		s.Runs[p.RunID] = &Run{ID: p.RunID, SliceID: p.SliceID, RunnerID: p.RunnerID, StartedAt: e.At, LeaseUntil: p.LeaseUntil}
 		sl.Status, sl.RunID, sl.Front, sl.StalledAt = SliceRunning, p.RunID, false, time.Time{}
+		sl.Version++
 		sl.HoldsExecute = sl.HoldsExecute || p.TakesExecute
 		sl.HoldsReview = sl.HoldsReview || p.TakesReview
 	case EvHeartbeat:
@@ -281,12 +282,12 @@ func (s *State) apply(e Event) error {
 		r.Closed, r.ClosedReason = true, p.Reason
 		sl := s.Slices[r.SliceID]
 		sl.RunID = ""
+		sl.Version++
 		switch p.Reason {
 		case CloseFlagged:
 			sl.Status = SliceFlagged
 		case CloseSubmitted:
 			sl.Status, sl.Branch, sl.Rework = SliceSubmitted, p.Branch, false
-			sl.Submits++
 		case CloseReleased:
 			sl.Status, sl.StalledAt = SliceStalled, e.At
 		case CloseLeaseExpired:
@@ -300,6 +301,7 @@ func (s *State) apply(e Event) error {
 			return err
 		}
 		sl.Status, sl.HoldsExecute, sl.HoldsReview, sl.Front, sl.StalledAt = SliceQueued, false, false, true, time.Time{}
+		sl.Version++
 	case EvPROpened:
 		var p prOpened
 		if err := json.Unmarshal(e.Data, &p); err != nil {
@@ -310,6 +312,7 @@ func (s *State) apply(e Event) error {
 			return errUnknown("slice", p.SliceID)
 		}
 		sl.PR = &PR{Repo: p.Repo, Number: p.Number, HeadSHA: p.HeadSHA}
+		sl.Version++
 		if sl.Status == SliceSubmitted {
 			sl.Status = SlicePROpen
 		}
@@ -322,7 +325,8 @@ func (s *State) apply(e Event) error {
 		if sl == nil || sl.PR == nil {
 			return errUnknown("slice PR", p.SliceID)
 		}
-		sl.PR.HeadSHA, sl.PR.ChecksGreen = p.HeadSHA, p.Success
+		sl.PR.HeadSHA, sl.PR.ChecksGreen, sl.PR.ChecksRecorded = p.HeadSHA, p.Success, true
+		sl.Version++
 		if !p.Success && (sl.Status == SlicePROpen || sl.Status == SliceSubmitted) {
 			sl.Status, sl.Rework, sl.StalledAt = SliceStalled, true, e.At
 		}
@@ -332,6 +336,7 @@ func (s *State) apply(e Event) error {
 			return err
 		}
 		sl.Status, sl.HoldsExecute = SliceInReview, false
+		sl.Version++
 	case EvPRApproved:
 		var p prApproved
 		if err := json.Unmarshal(e.Data, &p); err != nil {
@@ -342,6 +347,7 @@ func (s *State) apply(e Event) error {
 			return errUnknown("slice PR", p.SliceID)
 		}
 		sl.Status, sl.PR.ApprovedSHA, sl.HoldsReview = SliceApproved, p.HeadSHA, p.KeepsReview
+		sl.Version++
 	case EvPRChangesRequested:
 		var p prChangesRequested
 		if err := json.Unmarshal(e.Data, &p); err != nil {
@@ -352,6 +358,7 @@ func (s *State) apply(e Event) error {
 			return errUnknown("slice", p.SliceID)
 		}
 		sl.Status, sl.Rework = SliceQueued, true
+		sl.Version++
 	case EvItemAwaitsRelease:
 		it, err := s.itemFor(e.Data)
 		if err != nil {
@@ -373,6 +380,7 @@ func (s *State) apply(e Event) error {
 			return err
 		}
 		sl.Status = SliceMerged
+		sl.Version++
 	case EvReleaseDone:
 		it, err := s.itemFor(e.Data)
 		if err != nil {
