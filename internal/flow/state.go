@@ -55,6 +55,7 @@ type Item struct {
 	Ref           string      `json:"ref"`
 	Title         string      `json:"title"`
 	Intent        string      `json:"intent"`
+	Labels        []string    `json:"labels"`
 	Owner         string      `json:"owner"`
 	Value         float64     `json:"value"`
 	PredictedTier int         `json:"predicted_tier"`

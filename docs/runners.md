@@ -66,7 +66,8 @@ metronome next --runner laptop --json
     "id": "I1",
     "ref": "ACME-1",
     "title": "Add export",
-    "intent": "Let people save their records"
+    "intent": "Let people save their records",
+    "labels": []
   },
   "history": {
     "reason": "",
@@ -85,12 +86,12 @@ metronome next --runner laptop --json
 - `claim`: the run ID for reporting, asking, submitting or dropping, the slice ID and the lease deadline
   (RFC 3339 in UTC).
 - `slice`: the work to deliver, its repository, title, acceptance criteria and named approvers.
-- `item`: the parent item's ID, backlog reference, title and intent.
+- `item`: the parent item's ID, backlog reference, title, intent and labels.
 - `history`: a snapshot of why the slice is claimable, its rework status, previous run and recorded branch
   and PR, and answered asks. It is fixed at claim time, including when a claim is repeated with the same request ID.
 
 All JSON fields are present. Empty lists are `[]` and missing intent is `""`. Changes to the JSON contract
-are additive only. Text output says `none given` for missing intent or criteria and omits empty approvers.
+are additive only. Text output says `none given` for missing intent or criteria and omits empty approvers and labels.
 
 The `history.reason` field explains why work is available again:
 

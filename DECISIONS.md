@@ -3,6 +3,22 @@
 This file records what has been decided about Metronome, what the review of SPEC.md found, and what is still
 open.
 
+## Decided (2026-11-27): backlog item labels
+
+- Agent's decisions: accept optional source labels, trimming and collapsing whitespace, lowercasing,
+  de-duplicating and sorting before comparison. Allow at most 20 distinct labels, each 1 to 40
+  characters, starting with an ASCII letter or digit and containing only `a-z`, `0-9`, space and
+  `. _ - : /`. Exclude commas to keep the text board unambiguous. Refuse invalid sources rather than
+  dropping labels.
+- Keep sync add-only. Intake updates labels only on Ready items and on restoration, with full replacement
+  in `item_updated` and `item_restored`; absent labels mean none. Existing payloads replay without migration.
+- Filter the board server-side with the normalised `label` query (CLI `board --label`), keeping matching
+  items, their slices, open runs and open asks. Capacity is unchanged. The read-only page shows labels.
+- Always include `item.labels` in JSON briefs, using `[]` when empty.
+- Agent's testing decision (2026-11-27): test the served page and automatic label refresh only when
+  `METRONOME_BROWSER` explicitly names a Chromium executable. CI skips this test by default; a skip does
+  not verify rendering.
+
 ## Decided (2026-11-27): what the brief tells a resuming runner
 
 - Maintainer's decision: add rework status and reason, the previous branch and PR, and answered asks to the
@@ -89,8 +105,9 @@ open.
 
 - `metronome next` prints the claim, slice and item. With `--json`, it prints one object with these sections:
   `claim` (`workstream`, `run_id`, `slice_id`, `lease_until`; `workstream` added 2026-11-27), `slice` (`id`, `repo`, `title`, `criteria`, `approvers`),
-  and `item` (`id`, `ref`, `title`, `intent`). Every field is always present; empty criteria and approvers are
-  arrays, absent intent is an empty string, and the lease is an RFC 3339 timestamp in UTC. Changes to this
+  and `item` (`id`, `ref`, `title`, `intent`, `labels`; `labels` added 2026-11-27). Every field is always
+  present; empty criteria, approvers and labels are arrays, absent intent is an empty string, and the
+  lease is an RFC 3339 timestamp in UTC. Changes to this
   contract are additive only. `metronome run` will hand this same object to its command.
 - The CLI reads `GET /v1/board` after claiming. No new endpoint is needed because the slice and item brief
   fields are fixed once written. If the read fails or the slice or item is missing, the CLI reports the run
@@ -343,8 +360,9 @@ Recorded so the data model leaves room for it. Nothing here is in the proof of c
 - The source owns the backlog. `metronome intake --workstream NAME [--every D] -- CMD` reads backlog JSON
   from CMD's stdout, once or periodically, without holding source credentials. Stderr passes through;
   a failed command or invalid result syncs nothing, reports the error and does not stop a periodic loop.
-- Intake mirrors the source: add within Ready limits, rerank and update Ready titles and intent, and remove
-  missing items from Ready. Work in Plan or later is never automatically dropped; report a disappearance.
+- Intake mirrors the source: add within Ready limits, rerank and update Ready titles, intent and labels
+  (labels added 2026-11-27), and remove missing items from Ready. Work in Plan or later is never automatically
+  dropped; report a disappearance.
   Report and skip claims held by other instances, local or hosted. Repeating the same sync is idempotent.
 
 ## Agent decision (2026-11-27): implementing intake
@@ -356,8 +374,9 @@ Recorded so the data model leaves room for it. Nothing here is in the proof of c
 - Shelve before refill so newly freed room is usable immediately. Add and restore in source order under
   the existing refill threshold and Ready limit. Never evict an existing Ready item merely to make room
   for a higher-ranked new one; retain front priority for parked items.
-- Update only rank, title and intent on Ready items, including on restoration. Report changes to owner,
-  value, tier or slices instead of deciding the open question about changing those fields.
+- Update only rank, title, intent and labels on Ready items, including on restoration (labels added
+  2026-11-27). Report changes to owner, value, tier or slices instead of deciding the open question about
+  changing those fields.
 - A foreign claim shelves a Ready item and prevents adding or restoring it. A foreign claim or disappearance
   in Plan or later produces a note, leaving authored work intact. Done and dropped items need no note.
   Report cross-workstream refs rather than moving them. Add-only `backlog sync` also skips foreign claims.
@@ -589,6 +608,8 @@ Choices made while building step 1 where SPEC.md was silent. Each is easy to cha
 
 Everything section 12 of SPEC.md marks Open or Unverified, plus:
 
+- 2026-11-27: agent's open questions: whether labels should update on items in Plan or later, and whether
+  to allow non-ASCII labels.
 - 2026-11-27: what happens when an approver reports an effective tier of 2 or more on a tier 0 or 1 item.
   Effective tiers are not recorded yet, so only the confirmed tier decides today.
 - 2026-11-27: whether plan approval should stop overwriting the predicted tier, which SPEC.md section 6 keeps

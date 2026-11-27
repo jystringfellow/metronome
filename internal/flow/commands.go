@@ -15,6 +15,7 @@ type BacklogItem struct {
 	Ref           string      `json:"ref"`
 	Title         string      `json:"title"`
 	Intent        string      `json:"intent"`
+	Labels        []string    `json:"labels,omitempty"`
 	Owner         string      `json:"owner"`
 	Value         float64     `json:"value"`
 	PredictedTier *int        `json:"predicted_tier,omitempty"`
@@ -83,7 +84,8 @@ func (e *Engine) SyncBacklog(ctx context.Context, actor, requestID, workstream s
 		for _, it := range d.s.Items {
 			known[it.Ref] = true
 		}
-		if err := validateBacklog(items); err != nil {
+		items, err := normaliseBacklog(items)
+		if err != nil {
 			return err
 		}
 		for _, bi := range items {
@@ -111,21 +113,54 @@ func (e *Engine) SyncBacklog(ctx context.Context, actor, requestID, workstream s
 	})
 }
 
-func validateBacklog(items []BacklogItem) error {
+var labelPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9 ._:/-]*$`)
+
+func NormaliseLabel(label string) (string, error) {
+	label = strings.ToLower(strings.Join(strings.Fields(label), " "))
+	switch {
+	case label == "":
+		return "", fail(CodeInvalid, "%q is empty", label)
+	case len(label) > 40:
+		return "", fail(CodeInvalid, "%q exceeds 40 characters", label)
+	case !labelPattern.MatchString(label):
+		return "", fail(CodeInvalid, "%q must start with a-z or 0-9 and may use only a-z, 0-9, space and . _ - : /", label)
+	}
+	return label, nil
+}
+
+func normaliseBacklog(items []BacklogItem) ([]BacklogItem, error) {
+	items = slices.Clone(items)
 	for i, bi := range items {
 		if bi.Ref == "" || bi.Title == "" || bi.Owner == "" {
-			return fail(CodeInvalid, "backlog item %d needs ref, title and owner", i+1)
+			return nil, fail(CodeInvalid, "backlog item %d needs ref, title and owner", i+1)
 		}
 		if bi.PredictedTier != nil && (*bi.PredictedTier < 0 || *bi.PredictedTier > 3) {
-			return fail(CodeInvalid, "backlog item %q has tier %d, want 0 to 3", bi.Ref, *bi.PredictedTier)
+			return nil, fail(CodeInvalid, "backlog item %q has tier %d, want 0 to 3", bi.Ref, *bi.PredictedTier)
 		}
 		if len(bi.Slices) > 0 {
 			if err := validateSpecs(bi.Slices); err != nil {
-				return fail(CodeInvalid, "backlog item %q: %s", bi.Ref, err.(*Error).Message)
+				return nil, fail(CodeInvalid, "backlog item %q: %s", bi.Ref, err.(*Error).Message)
 			}
 		}
+		var labels []string
+		seen := map[string]bool{}
+		for index, raw := range bi.Labels {
+			label, err := NormaliseLabel(raw)
+			if err != nil {
+				return nil, fail(CodeInvalid, "backlog item %q label %d: %s", bi.Ref, index+1, err.(*Error).Message)
+			}
+			if !seen[label] {
+				labels = append(labels, label)
+				seen[label] = true
+			}
+		}
+		if len(labels) > 20 {
+			return nil, fail(CodeInvalid, "backlog item %q has %d labels, want at most 20", bi.Ref, len(labels))
+		}
+		sort.Strings(labels)
+		items[i].Labels = labels
 	}
-	return nil
+	return items, nil
 }
 
 func (d *decider) addBacklogItem(workstream string, bi BacklogItem, rank int) {
@@ -136,7 +171,8 @@ func (d *decider) addBacklogItem(workstream string, bi BacklogItem, rank int) {
 	d.emit(EvItemAdded, itemAdded{
 		Workstream: workstream,
 		ItemID:     d.nextItemID(), Ref: bi.Ref, Title: bi.Title, Intent: bi.Intent, Owner: bi.Owner,
-		Value: bi.Value, PredictedTier: tier, Rank: rank,
+		Labels: bi.Labels,
+		Value:  bi.Value, PredictedTier: tier, Rank: rank,
 		Slices: bi.Slices, TierDefaulted: bi.PredictedTier == nil,
 	})
 }
@@ -150,7 +186,8 @@ func (e *Engine) IntakeBacklog(ctx context.Context, actor, requestID, workstream
 		if ws == nil {
 			return errUnknown("workstream", workstream)
 		}
-		if err := validateBacklog(items); err != nil {
+		items, err := normaliseBacklog(items)
+		if err != nil {
 			return err
 		}
 		positions := map[string]int{}
@@ -188,8 +225,8 @@ func (e *Engine) IntakeBacklog(ctx context.Context, actor, requestID, workstream
 					d.note("%s (%s) is claimed by %s in the source; shelved", it.Ref, it.ID, bi.ClaimedBy)
 					ready--
 				default:
-					if it.Rank != rank || it.Title != bi.Title || it.Intent != bi.Intent {
-						d.emit(EvItemUpdated, itemUpdated{ItemID: it.ID, Rank: rank, Title: bi.Title, Intent: bi.Intent})
+					if it.Rank != rank || it.Title != bi.Title || it.Intent != bi.Intent || !slices.Equal(it.Labels, bi.Labels) {
+						d.emit(EvItemUpdated, itemUpdated{ItemID: it.ID, Rank: rank, Title: bi.Title, Intent: bi.Intent, Labels: bi.Labels})
 					}
 					d.noteBacklogDifferences(it, bi)
 				}
@@ -223,7 +260,7 @@ func (e *Engine) IntakeBacklog(ctx context.Context, actor, requestID, workstream
 			if it == nil {
 				d.addBacklogItem(workstream, bi, i+1)
 			} else {
-				d.emit(EvItemRestored, itemUpdated{ItemID: it.ID, Rank: i + 1, Title: bi.Title, Intent: bi.Intent})
+				d.emit(EvItemRestored, itemUpdated{ItemID: it.ID, Rank: i + 1, Title: bi.Title, Intent: bi.Intent, Labels: bi.Labels})
 				d.noteBacklogDifferences(it, bi)
 			}
 			ready++
@@ -244,7 +281,7 @@ func (d *decider) noteBacklogDifferences(it *Item, bi BacklogItem) {
 		return left.Title == right.Title && left.Repo == right.Repo && slices.Equal(left.Criteria, right.Criteria) && slices.Equal(left.Approvers, right.Approvers) && slices.Equal(left.After, right.After)
 	})
 	if it.Owner != bi.Owner || it.Value != bi.Value || it.PredictedTier != tier || it.TierDefaulted != (bi.PredictedTier == nil) || !sameSlices {
-		d.note("%s (%s): the source changed owner, value, tier or slices; intake updates only rank, title and intent", it.Ref, it.ID)
+		d.note("%s (%s): the source changed owner, value, tier or slices; intake updates only rank, title, intent and labels", it.Ref, it.ID)
 	}
 }
 

@@ -46,7 +46,7 @@ go build -o metronome ./cmd/metronome
 export PATH="$PWD:$PATH"
 ./metronome serve --db metronome.db &
 
-./metronome backlog sync backlog.json        # {"items":[{"ref":"ACME-1","title":"…","intent":"…","owner":"pat"}]} (optional predicted_tier and slices; see docs/backlog.md)
+./metronome backlog sync backlog.json        # {"items":[{"ref":"ACME-1","title":"…","intent":"…","owner":"pat"}]} (optional labels, predicted_tier and slices; see docs/backlog.md)
 ./metronome plan start
 ./metronome plan propose I1 --slices slices.json   # [{"title":"…","repo":"acme/app","criteria":["…"],"approvers":["rev"]},{"title":"…","repo":"acme/app","after":[1]}]
 ./metronome --as pat plan approve I1
@@ -68,6 +68,7 @@ metronome intake --workstream metronome --every 10m -- metronome github issues -
 ./metronome workstream set example --execute 2
 ./metronome workstream list
 ./metronome board --workstream example
+./metronome board --label slow
 ```
 
 Run `metronome help` for every command.

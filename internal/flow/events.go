@@ -61,6 +61,7 @@ type itemAdded struct {
 	Ref           string      `json:"ref"`
 	Title         string      `json:"title"`
 	Intent        string      `json:"intent"`
+	Labels        []string    `json:"labels,omitempty"`
 	Owner         string      `json:"owner"`
 	Value         float64     `json:"value"`
 	PredictedTier int         `json:"predicted_tier"`
@@ -74,10 +75,11 @@ type itemRef struct {
 }
 
 type itemUpdated struct {
-	ItemID string `json:"item_id"`
-	Rank   int    `json:"rank"`
-	Title  string `json:"title"`
-	Intent string `json:"intent"`
+	ItemID string   `json:"item_id"`
+	Rank   int      `json:"rank"`
+	Title  string   `json:"title"`
+	Intent string   `json:"intent"`
+	Labels []string `json:"labels,omitempty"`
 }
 
 type itemShelved struct {
@@ -222,7 +224,8 @@ func (s *State) apply(e Event) error {
 		s.Items[p.ItemID] = &Item{
 			Workstream: p.Workstream,
 			ID:         p.ItemID, Ref: p.Ref, Title: p.Title, Intent: p.Intent, Owner: p.Owner,
-			Value: p.Value, PredictedTier: p.PredictedTier, Rank: p.Rank,
+			Labels: append([]string{}, p.Labels...),
+			Value:  p.Value, PredictedTier: p.PredictedTier, Rank: p.Rank,
 			PlannedSlices: p.Slices, TierDefaulted: p.TierDefaulted,
 			Status: ItemReady, AddedAt: e.At, Slices: []string{},
 		}
@@ -243,6 +246,7 @@ func (s *State) apply(e Event) error {
 			return fail(CodeConflict, "item %s is %s, not %s", it.ID, it.Status, want)
 		}
 		it.Rank, it.Title, it.Intent = p.Rank, p.Title, p.Intent
+		it.Labels = append([]string{}, p.Labels...)
 		it.Status, it.ShelvedReason, it.ClaimedBy = ItemReady, "", ""
 	case EvItemShelved:
 		var p itemShelved
