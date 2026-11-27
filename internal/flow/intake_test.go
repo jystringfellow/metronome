@@ -48,6 +48,27 @@ func TestIntakeAddsNewItemsWithinReadyLimits(t *testing.T) {
 	wantEventTypes(t, h.ok(h.eng.IntakeBacklog(ctx(), "pat", "", "example", sourceItems(1, 2, 3, 4, 5))))
 }
 
+func TestIntakeLabels(t *testing.T) {
+	h := newHarness(t, nil)
+	items := sourceItems(1, 2)
+	items[0].Labels = []string{"export", "ready"}
+	h.intake(items...)
+	h.eng = h.reload()
+	if !reflect.DeepEqual(h.item("I1").Labels, items[0].Labels) || h.item("I2").Labels != nil {
+		t.Fatal(h.item("I1"), h.item("I2"))
+	}
+	items[0].Labels = []string{"new"}
+	result := h.intake(items...)
+	wantEventTypes(t, result)
+	wantNote(t, result, "labels or slices")
+	if !reflect.DeepEqual(h.item("I1").Labels, []string{"export", "ready"}) {
+		t.Fatal(h.item("I1"))
+	}
+	items[0].Labels = []string{" "}
+	_, err := h.eng.IntakeBacklog(ctx(), "pat", "", "default", items)
+	wantCode(t, err, flow.CodeInvalid)
+}
+
 func TestIntakeReranksAndUpdatesReadyItems(t *testing.T) {
 	h := newHarness(t, nil)
 	h.intake(sourceItems(1, 2, 3)...)

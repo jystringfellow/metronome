@@ -93,6 +93,10 @@ func bodyIntent(body string) string {
 		}
 	}
 	intent := strings.Join(strings.Fields(strings.Join(paragraph, " ")), " ")
+	return CapIntent(intent)
+}
+
+func CapIntent(intent string) string {
 	runes := []rune(intent)
 	if len(runes) > 500 {
 		intent = string(runes[:499])

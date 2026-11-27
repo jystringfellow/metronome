@@ -16,6 +16,7 @@ type BacklogItem struct {
 	Title         string      `json:"title"`
 	Intent        string      `json:"intent"`
 	Owner         string      `json:"owner"`
+	Labels        []string    `json:"labels,omitempty"`
 	Value         float64     `json:"value"`
 	PredictedTier *int        `json:"predicted_tier,omitempty"`
 	Slices        []SliceSpec `json:"slices,omitempty"`
@@ -116,6 +117,11 @@ func validateBacklog(items []BacklogItem) error {
 		if bi.Ref == "" || bi.Title == "" || bi.Owner == "" {
 			return fail(CodeInvalid, "backlog item %d needs ref, title and owner", i+1)
 		}
+		for _, label := range bi.Labels {
+			if strings.TrimSpace(label) == "" {
+				return fail(CodeInvalid, "backlog item %q has an empty label", bi.Ref)
+			}
+		}
 		if bi.PredictedTier != nil && (*bi.PredictedTier < 0 || *bi.PredictedTier > 3) {
 			return fail(CodeInvalid, "backlog item %q has tier %d, want 0 to 3", bi.Ref, *bi.PredictedTier)
 		}
@@ -137,7 +143,7 @@ func (d *decider) addBacklogItem(workstream string, bi BacklogItem, rank int) {
 		Workstream: workstream,
 		ItemID:     d.nextItemID(), Ref: bi.Ref, Title: bi.Title, Intent: bi.Intent, Owner: bi.Owner,
 		Value: bi.Value, PredictedTier: tier, Rank: rank,
-		Slices: bi.Slices, TierDefaulted: bi.PredictedTier == nil,
+		Slices: bi.Slices, TierDefaulted: bi.PredictedTier == nil, Labels: bi.Labels,
 	})
 }
 
@@ -243,8 +249,8 @@ func (d *decider) noteBacklogDifferences(it *Item, bi BacklogItem) {
 	sameSlices := slices.EqualFunc(it.PlannedSlices, bi.Slices, func(left, right SliceSpec) bool {
 		return left.Title == right.Title && left.Repo == right.Repo && slices.Equal(left.Criteria, right.Criteria) && slices.Equal(left.Approvers, right.Approvers) && slices.Equal(left.After, right.After)
 	})
-	if it.Owner != bi.Owner || it.Value != bi.Value || it.PredictedTier != tier || it.TierDefaulted != (bi.PredictedTier == nil) || !sameSlices {
-		d.note("%s (%s): the source changed owner, value, tier or slices; intake updates only rank, title and intent", it.Ref, it.ID)
+	if it.Owner != bi.Owner || it.Value != bi.Value || it.PredictedTier != tier || it.TierDefaulted != (bi.PredictedTier == nil) || !sameSlices || !slices.Equal(it.Labels, bi.Labels) {
+		d.note("%s (%s): the source changed owner, value, tier, labels or slices; intake updates only rank, title and intent", it.Ref, it.ID)
 	}
 }
 

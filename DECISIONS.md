@@ -414,6 +414,40 @@ Recorded so the data model leaves room for it. Nothing here is in the proof of c
 - Should value come from a project field?
 - Should the label filter support multiple labels (OR)?
 
+## Agent decision (2026-11-27): implementing Azure DevOps intake
+
+- Add optional `labels` to the backlog contract and item-added event, persisted in board data. Changes
+  to existing Ready or restored items are reported rather than applied; absent labels replay unchanged.
+  GitHub intake still emits no labels.
+- Parse Predecessor links and retain their reference mapping in the adapter. Report links inside and
+  outside the result, except finished predecessors. The brief's dependency criterion is only partly met:
+  cross-item dependencies remain open (#46), and `after` cannot express these links.
+- Use `az devops invoke` to distinguish empty flat queries from link queries and read expanded relations.
+  POST WIQL text or GET a saved query, then POST batches of up to 200 IDs. Require complete results;
+  use private temporary files for request bodies and disable automatic organisation detection.
+  **Unverified:** the `wiql` and `workitemsbatch` resource names and response shapes are based on the
+  planned REST contract and recorded-shape fixtures, not a live Azure DevOps organisation.
+- Default ready states are New, Approved, To Do and Proposed; a comma-separated override replaces them.
+- Done, Closed and Removed are always finished, omitted with notes so local Ready copies are shelved.
+- Any assignee is a foreign claim; otherwise non-ready unfinished states are claimed as `state STATE`.
+  Claimed items keep their rank position in the result.
+- Owners use uniqueName, then displayName, then the explicit fallback. Rank uses BacklogPriority, then
+  StackRank, ascending, missing last and ties by ID. Refs are always AB#ID; tier comes from a tier tag,
+  value is zero, and a Repo marker supplies a single pre-planned slice. Without one, Plan proposes slices.
+  Convert HTML to blocks before decoding entities; use the first description paragraph for intent and
+  acceptance list items or paragraphs for criteria. Keep approval gates unchanged.
+- Agent follow-up (2026-11-27, gate 1): recognise only syntactically valid tag names and delimiters,
+  rejecting unquoted opening angle brackets inside tags. Preserve literal or malformed angle brackets
+  as text and split plain fields by line when no tag or closed comment is consumed, so comparison
+  expressions and standalone Repo markers survive conversion.
+
+## Open (2026-11-27): Azure DevOps intake follow-up
+
+- Should Business Value supply value, or a migration marker preserve existing refs?
+- How should the adapter publish claims, and should ready-state categories replace process state names?
+- Carry predecessor dependencies once cross-item dependencies (#46) are supported.
+- Verify the az invoke call and response shapes against a live organisation.
+
 ## Decided by the maintainer (2026-11-27): slices can depend on other slices
 
 - A proposed slice may list `after`, 1-based positions of slices of the same item that must merge first.

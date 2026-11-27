@@ -62,6 +62,7 @@ type itemAdded struct {
 	Title         string      `json:"title"`
 	Intent        string      `json:"intent"`
 	Owner         string      `json:"owner"`
+	Labels        []string    `json:"labels,omitempty"`
 	Value         float64     `json:"value"`
 	PredictedTier int         `json:"predicted_tier"`
 	Rank          int         `json:"rank"`
@@ -223,7 +224,7 @@ func (s *State) apply(e Event) error {
 			Workstream: p.Workstream,
 			ID:         p.ItemID, Ref: p.Ref, Title: p.Title, Intent: p.Intent, Owner: p.Owner,
 			Value: p.Value, PredictedTier: p.PredictedTier, Rank: p.Rank,
-			PlannedSlices: p.Slices, TierDefaulted: p.TierDefaulted,
+			PlannedSlices: p.Slices, TierDefaulted: p.TierDefaulted, Labels: p.Labels,
 			Status: ItemReady, AddedAt: e.At, Slices: []string{},
 		}
 	case EvItemUpdated, EvItemRestored:

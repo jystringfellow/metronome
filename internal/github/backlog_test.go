@@ -35,7 +35,7 @@ func TestIssueTier(t *testing.T) {
 	}{
 		{[]string{"Tier: 0"}, 0, false}, {[]string{"tier:1", "tier:1"}, 1, false}, {[]string{"tier:7"}, 0, true}, {[]string{"tier:high"}, 0, true}, {[]string{"tier:1", "tier:2"}, 0, true},
 	} {
-		tier, err := issueTier(test.labels)
+		tier, err := TierLabel(test.labels)
 		if test.bad {
 			if err == nil {
 				t.Fatal(test.labels)

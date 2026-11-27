@@ -56,6 +56,7 @@ type Item struct {
 	Title         string      `json:"title"`
 	Intent        string      `json:"intent"`
 	Owner         string      `json:"owner"`
+	Labels        []string    `json:"labels,omitempty"`
 	Value         float64     `json:"value"`
 	PredictedTier int         `json:"predicted_tier"`
 	TierDefaulted bool        `json:"tier_defaulted,omitempty"`

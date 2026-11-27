@@ -71,7 +71,7 @@ take an unmarked item before either publishes its marker. Resolving that race re
 Rank is the item's 1-based position in the full source list, including skipped items. Previously parked
 items retain their front-of-queue priority. Shelving frees Ready room before refill. Adds and restores
 occur only when Ready is below the refill threshold, up to the workstream's Ready limit. New items never
-displace existing Ready items. Changes to owner, value, tier or slices on existing Ready or restored items
+displace existing Ready items. Changes to owner, value, tier, labels or slices on existing Ready or restored items
 are reported rather than applied. Shelved items retain the reason and claimant recorded when shelved;
 they are visible through `board --json`, but not the text board or planning queue.
 
@@ -106,6 +106,58 @@ Pull requests, non-issue or unreadable project items, and project items from oth
 Missing owners, invalid or conflicting tier labels, duplicate refs, missing or nonnumeric project fields,
 and failed reads exit nonzero without printing backlog JSON. With no matching issues, `items` is empty.
 The built-in command is read-only, publishes no claims, and does not contact the Metronome service.
+
+## Built in: Azure DevOps
+
+```sh
+metronome ado items --org https://dev.azure.com/example --project acme --wiql ready.wiql --owner pat
+metronome ado items --org https://dev.azure.com/example --project acme --query 12345678-1234-1234-1234-123456789abc --owner pat
+metronome intake --workstream default -- metronome ado items --org https://dev.azure.com/example --project acme --wiql ready.wiql --owner pat
+```
+
+Supply a flat WIQL query in a file or the GUID of a saved flat query, not both. Install the Azure DevOps
+extension for `az` and sign in via `az login` or `az devops login`; credentials stay with the CLI.
+The command uses these read-only requests (the POST bodies are in private temporary files):
+
+```sh
+az devops invoke --org ORG --area wit --resource wiql --route-parameters project=P --http-method POST --in-file TMP --api-version 7.1 --detect false --output json
+az devops invoke --org ORG --area wit --resource wiql --route-parameters project=P id=GUID --http-method GET --api-version 7.1 --detect false --output json
+az devops invoke --org ORG --area wit --resource workitemsbatch --route-parameters project=P --http-method POST --in-file TMP --api-version 7.1 --detect false --output json
+```
+
+The first body is `{"query":"<WIQL text>"}`. The batch body is
+`{"ids":[1,2],"$expand":"relations","errorPolicy":"fail"}`. Details are read in batches of at most 200 IDs.
+Ranked items come first, lowest rank first, with ties broken by ID; unranked items come last.
+
+| Backlog field | Work item mapping |
+| --- | --- |
+| `ref` | `AB#ID` from `id`. |
+| `title` | `System.Title`. |
+| `intent` | First prose paragraph of `System.Description`, converted from HTML to plain text and capped at 500 runes. |
+| `owner` | `System.AssignedTo.uniqueName`, then `displayName`, otherwise `--owner`. |
+| rank | `Microsoft.VSTS.Common.BacklogPriority`, falling back to `Microsoft.VSTS.Common.StackRank`. |
+| `predicted_tier`, `labels` | Semicolon-separated `System.Tags`: `tier:N` (0–3) sets tier, other distinct tags are labels. |
+| `slices` | One slice if Description or Acceptance Criteria has a standalone `Repo: OWNER/NAME` line; otherwise no pre-planned slices. |
+| `criteria` | HTML list items from `Microsoft.VSTS.Common.AcceptanceCriteria`, or its paragraphs if it has no list items. |
+| `claimed_by` | Assignee, or `state STATE` for non-ready, unfinished `System.State`. |
+
+HTML entities are decoded after tag removal, so escaped angle brackets stay literal text. Repository
+markers are excluded from intent and criteria. Value stays zero and approvers are empty.
+
+By default only unassigned items in `New`, `Approved`, `To Do` or `Proposed` are offered. Override the
+ready-state list with `--ready-states 'New,Ready'` (case-insensitive). Assigned and other unfinished
+items, including `Committed`, remain in the result with claims so intake skips them. `Done`, `Closed`
+and `Removed` are always omitted and noted on stderr, even if named in the ready-state list.
+
+Predecessor relations (`System.LinkTypes.Dependency-Reverse`) are reported on stderr whether inside or
+outside the query result; finished predecessors in the result need no note. Cross-item dependencies
+are not yet supported (#46), so these links do not gate claims. Choose a query that offers only work
+whose prerequisites are met.
+
+Failed reads, link queries, missing or duplicate IDs, invalid fields, missing owners, conflicting tier
+or repo markers fail without printing backlog JSON. A complete empty flat result prints `{"items":[]}`.
+The source is read-only, publishes no claims, and does not contact the Metronome service. The az invoke
+resource names and response shapes have been tested against fixtures, not a live Azure DevOps organisation.
 
 ## Example: writing another source command
 
