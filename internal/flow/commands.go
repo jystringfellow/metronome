@@ -436,7 +436,17 @@ func (e *Engine) PRMerged(ctx context.Context, actor, requestID, sliceID, by str
 		default:
 			return fail(CodeConflict, "slice %s is %s; a merge is recorded from pr_open, in_review or approved", sl.ID, sl.Status)
 		}
-		d.emit(EvPRMerged, sliceRef{SliceID: sl.ID})
+		it := d.s.Items[sl.ItemID]
+		finishesWithoutRelease := !it.needsRelease() && it.Status == ItemExecuting
+		d.emit(EvPRMerged, prMerged{SliceID: sl.ID, FreesReview: finishesWithoutRelease})
+		if finishesWithoutRelease {
+			for _, sib := range d.s.itemSlices(it.ID) {
+				if sib.ID != sl.ID && sib.Status != SliceMerged {
+					return nil
+				}
+			}
+			d.emit(EvItemDone, itemRef{ItemID: it.ID})
+		}
 		return nil
 	})
 }
@@ -446,6 +456,9 @@ func (e *Engine) ReleaseDone(ctx context.Context, actor, requestID, itemID strin
 		it := d.s.Items[itemID]
 		if it == nil {
 			return errUnknown("item", itemID)
+		}
+		if (it.Status == ItemExecuting || it.Status == ItemDone) && !it.needsRelease() {
+			return fail(CodeConflict, "item %s is at tier %d, so it has no release: it is done when its last slice merges (it is %s)", it.ID, it.ConfirmedTier, it.Status)
 		}
 		if it.Status != ItemReleasing {
 			return fail(CodeConflict, "item %s is %s, not releasing", it.ID, it.Status)
@@ -489,6 +502,8 @@ func (d *decider) approve(sl *Slice, headSHA, by string) {
 	switch {
 	case !allApproved:
 		d.emit(EvPRApproved, prApproved{SliceID: sl.ID, HeadSHA: headSHA, By: by})
+	case !d.s.Items[sl.ItemID].needsRelease():
+		d.emit(EvPRApproved, prApproved{SliceID: sl.ID, HeadSHA: headSHA, By: by, KeepsReview: true})
 	case d.s.Usage().Release < d.cfg.Limits.Release:
 		d.emit(EvPRApproved, prApproved{SliceID: sl.ID, HeadSHA: headSHA, By: by, KeepsReview: true})
 		d.emit(EvReleaseSlotTaken, itemRef{ItemID: sl.ItemID})

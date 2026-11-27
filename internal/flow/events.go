@@ -38,6 +38,7 @@ const (
 	EvItemAwaitsRelease  = "item_awaits_release"
 	EvReleaseSlotTaken   = "release_slot_taken"
 	EvPRMerged           = "pr_merged"
+	EvItemDone           = "item_done"
 	EvReleaseDone        = "release_done"
 )
 
@@ -143,6 +144,11 @@ type prChangesRequested struct {
 	By      string `json:"by"`
 }
 
+type prMerged struct {
+	SliceID     string `json:"slice_id"`
+	FreesReview bool   `json:"frees_review,omitempty"`
+}
+
 type approvalWithdrawn struct {
 	SliceID      string `json:"slice_id"`
 	WithdrawnSHA string `json:"withdrawn_sha"`
@@ -198,6 +204,7 @@ func (s *State) apply(e Event) error {
 			return errUnknown("item", p.ItemID)
 		}
 		it.Status, it.HoldsPlan, it.PredictedTier = ItemExecuting, false, p.ConfirmedTier
+		it.ConfirmedTier = p.ConfirmedTier
 		for i, spec := range it.Proposal {
 			id := p.SliceIDs[i]
 			s.Slices[id] = &Slice{
@@ -402,12 +409,28 @@ func (s *State) apply(e Event) error {
 			sl.HoldsReview = false
 		}
 	case EvPRMerged:
-		sl, err := s.sliceFor(e.Data)
+		var p prMerged
+		if err := json.Unmarshal(e.Data, &p); err != nil {
+			return err
+		}
+		sl := s.Slices[p.SliceID]
+		if sl == nil {
+			return errUnknown("slice", p.SliceID)
+		}
+		sl.Status = SliceMerged
+		if p.FreesReview {
+			sl.HoldsReview = false
+		}
+		sl.Version++
+	case EvItemDone:
+		it, err := s.itemFor(e.Data)
 		if err != nil {
 			return err
 		}
-		sl.Status = SliceMerged
-		sl.Version++
+		it.Status, it.HoldsRelease = ItemDone, false
+		for _, sl := range s.itemSlices(it.ID) {
+			sl.HoldsReview, sl.HoldsExecute = false, false
+		}
 	case EvReleaseDone:
 		it, err := s.itemFor(e.Data)
 		if err != nil {

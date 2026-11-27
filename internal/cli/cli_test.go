@@ -240,7 +240,7 @@ func TestOneItemThroughTheFlowFromTheCommandLine(t *testing.T) {
 	if out := e.ok("pat", "inbox", "pat"); !strings.Contains(out, "Approve the plan for Add export") {
 		t.Fatalf("inbox:\n%s", out)
 	}
-	e.ok("pat", "plan", "approve", "I1", "--tier", "1")
+	e.ok("pat", "plan", "approve", "I1", "--tier", "2")
 
 	if out := e.ok("laptop", "next", "--runner", "laptop"); !strings.Contains(out, "run R1 claimed slice I1.1") {
 		t.Fatalf("next:\n%s", out)
@@ -270,6 +270,65 @@ func TestOneItemThroughTheFlowFromTheCommandLine(t *testing.T) {
 	}
 	if out := e.ok("pat", "events"); strings.Count(out, "\n") < 15 {
 		t.Fatalf("event log has too few entries:\n%s", out)
+	}
+}
+
+func TestLowTierItemIsDoneAtMergeFromTheCommandLine(t *testing.T) {
+	e := newEnv(t)
+	backlog := e.file("backlog.json", api.BacklogRequest{Items: []flow.BacklogItem{{Ref: "ACME-1", Title: "Update docs", Owner: "pat", PredictedTier: 1}}})
+	e.ok("pat", "backlog", "sync", backlog)
+	e.ok("pat", "plan", "start")
+	slices := e.file("slices.json", []flow.SliceSpec{{Title: "Docs", Repo: "acme/app"}})
+	e.ok("pat", "plan", "propose", "I1", "--slices", slices)
+	e.ok("pat", "plan", "approve", "I1", "--tier", "1")
+	e.ok("laptop", "next", "--runner", "laptop")
+	e.ok("laptop", "submit", "R1", "--branch", "metronome/I1.1")
+	e.ok("github", "github", "pr-opened", "--slice", "I1.1", "--repo", "acme/app", "--number", "42", "--head", "abc")
+	e.ok("github", "github", "merged", "--slice", "I1.1", "--by", "pat")
+	if board := e.board(); board.Items[0].Status != flow.ItemDone || board.Usage.Execute != 0 || board.Usage.Review != 0 || board.Usage.Release != 0 {
+		t.Fatalf("final board = %+v", board)
+	}
+	if out, code := e.run("pat", "release-done", "I1"); code != 1 || !strings.Contains(out, "conflict") || !strings.Contains(out, "tier 1") || !strings.Contains(out, "last slice merges") {
+		t.Fatalf("release-done exited %d:\n%s", code, out)
+	}
+}
+
+func TestLowTierNonFinalMergeFreesReviewFromTheCommandLine(t *testing.T) {
+	for _, tier := range []string{"0", "1"} {
+		t.Run("tier "+tier, func(t *testing.T) {
+			e := newEnv(t)
+			backlog := e.file("backlog.json", api.BacklogRequest{Items: []flow.BacklogItem{{Ref: "ACME-1", Title: "Example", Owner: "pat"}}})
+			e.ok("pat", "backlog", "sync", backlog)
+			e.ok("pat", "plan", "start")
+			slices := e.file("slices.json", []flow.SliceSpec{{Title: "First", Repo: "acme/app"}, {Title: "Second", Repo: "acme/app"}})
+			e.ok("pat", "plan", "propose", "I1", "--slices", slices)
+			e.ok("pat", "plan", "approve", "I1", "--tier", tier)
+			for _, slice := range []struct{ id, run, number string }{{"I1.1", "R1", "41"}, {"I1.2", "R2", "42"}} {
+				e.ok("laptop", "next", "--runner", "laptop", "--slice", slice.id)
+				e.ok("laptop", "submit", slice.run, "--branch", "metronome/"+slice.id)
+				e.ok("github", "github", "pr-opened", "--slice", slice.id, "--repo", "acme/app", "--number", slice.number, "--head", "abc")
+				e.ok("github", "github", "checks", "--slice", slice.id, "--head", "abc", "--success")
+				e.ok("github", "github", "ready-for-review", "--slice", slice.id)
+				e.ok("github", "github", "approved", "--slice", slice.id, "--head", "abc", "--by", "rev")
+			}
+			if board := e.board(); board.Usage.Review != 1 || board.Usage.Release != 0 {
+				t.Fatalf("board before merge = %+v", board)
+			}
+			e.ok("github", "github", "merged", "--slice", "I1.2", "--by", "rev")
+			board := e.board()
+			if board.Items[0].Status != flow.ItemExecuting || board.Usage.Review != 0 || board.Usage.Execute != 0 || board.Usage.Release != 0 {
+				t.Fatalf("board after non-final merge = %+v", board)
+			}
+			for _, slice := range board.Slices {
+				if slice.ID == "I1.2" && (slice.Status != flow.SliceMerged || slice.HoldsReview) {
+					t.Fatalf("merged slice = %+v", slice)
+				}
+			}
+			e.ok("github", "github", "merged", "--slice", "I1.1", "--by", "rev")
+			if board := e.board(); board.Items[0].Status != flow.ItemDone || board.Usage.Review != 0 || board.Usage.Release != 0 {
+				t.Fatalf("final board = %+v", board)
+			}
+		})
 	}
 }
 

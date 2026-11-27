@@ -51,7 +51,7 @@ Runners (the connector operations):
 
 People:
   answer FLAG TEXT
-  release-done ITEM
+  release-done ITEM               finish the release of a tier 2 or 3 item
 
 GitHub:
   github poll [--every 1m]        record what GitHub shows for each submitted slice's branch, once or on a repeat
