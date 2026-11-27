@@ -6,7 +6,8 @@ open.
 ## Decided (2026-11-26)
 
 - **Local first, hosted as the goal.** The local version proves the protocol with one person and one repository.
-  WIP limits are per team, so the real thing needs one shared, hosted record.
+  WIP limits are per workstream and work is shared across people, so the real thing needs one shared, hosted
+  record.
 - **Its own repository.** Metronome is not part of kapellmeister or scoring-stage.
 - **It does not own the backlog.** Teams keep their backlog wherever they like: a tracker, an issue list or a
   file. Mirroring status back into it is the team's own skill or plugin. Metronome cares only about the shape of
@@ -23,6 +24,71 @@ open.
   blocked-item age queries over the log.
 - **GitHub events sit behind one interface:** polling `gh` locally and webhooks when hosted, with the same event
   shape.
+
+## Decided (2026-11-26): workstreams, identity and execution
+
+- **WIP limits are set per workstream.** A workstream is a board with a backlog and stage limits: one team's
+  board, or an initiative that spans teams. It replaces the team as the scope of limits in SPEC.md section 3.
+- **Two limits protect one person across every workstream they touch:** the per-approver cap, and the local
+  runner cap (how many claims one person's runners may hold). They are ceilings, not capacity, and never decide
+  what a workstream takes on.
+- **No directory groups.** A workstream's settings list its members and their roles (owner or member). Owners
+  change its limits and settings.
+- **Who is accountable for automatic cloud dispatch is a workstream setting:** a named service identity or the
+  item's owner. A slice can be moved from cloud to local and back by command. A move hands over the lease and
+  keeps the slice's slots, so it never frees or takes capacity.
+- **Execution starts local only.** Runners on people's machines claim work through the CLI, the MCP server or
+  the API, from one shared, hosted record. Authentication for cloud runners is deferred. The preferred design is
+  a cloud runner platform that issues tokens with Metronome as their audience, bound to the run.
+- **People sign in with any standard OIDC provider,** by device flow or browser sign-in with PKCE. Metronome
+  records whom it acts for and never acts as anyone: each event carries the accountable person, the actor (the
+  runner and its lease) and where the credential came from. On claim, Metronome issues its own short token
+  scoped to the claimed slice, which also fences stale writes.
+- **Identity links are optional and made by the person.** `metronome login` offers to link a GitHub account
+  through GitHub's OAuth device flow. A link ties an outside author ID to a person and is used only to attribute
+  work. A missing link never blocks anything, and approver caps count GitHub logins directly.
+- **Names:** workstream; item, a backlog entry; slice, the claimable unit, usually one PR; run, one claim
+  attempt; thread, the conversation on a slice. "Task" is avoided because other tools use it for other things.
+- **Every item carries its workstream and an optional source link from the start,** so pulling work between
+  workstreams can be added later without migrating data.
+
+## Designed, not built: open workstreams and shared work (2026-11-26)
+
+Recorded so the data model leaves room for it. Nothing here is in the proof of concept.
+
+- **Anyone can create a workstream.** Its intake is pluggable: a skill, script or adapter fills its backlog and
+  ranks it, for example by usage or performance data.
+- **People find workstreams and choose how to give them time.** They participate by joining one as a member and
+  claiming from it directly, or they pull an item from it into their own workstream by reference.
+- **A pull by reference moves the work, not the record.** The item counts against the limits of the workstream
+  that pulled it, and keeps its link to the source, so the source's ranking and reporting still see it. An item
+  is in one workstream at a time, and the source shows where it went.
+- **A workstream may have no capacity** (limits of 0) and only supply ranked work. Other workstreams subscribe
+  to it, or pull from it by reference, using an ownership filter (the paths, routes or repositories they own).
+- **The source's ranking holds.** Within its filter, a subscriber takes items in the source's order. Taking one
+  out of order is allowed, needs a reason, and shows in the source's view.
+- **A subscription is a standing pull:** an allocation (at most N slices in flight) plus an ownership filter, so a
+  team keeps drawing from a source without pulling each item by hand.
+- **Staffing an initiative is a settings change:** the source gains limits and members, who take items in
+  strict priority order. Subscriptions carry on alongside.
+- **An item flows through the workstream that pulled it** and keeps its link to the source. The source's view
+  is a query across every item linked to it.
+
+## Proposed (2026-11-26), not decided
+
+- **Release and Monitor read signal adapters.** An adapter records evidence on an item from a feature flag
+  service (on or off, rollout percentage, targeting), traffic data (for example, the share of sessions on a new
+  page against the old one) or an observability service (errors, latency, page load time). Each piece of
+  evidence names its source and when it was read. Metronome keeps snapshots and a link, and the time series stay
+  in the service that owns them. Uses:
+  - Release progress and gates, such as "done when the flag is at 100% and the new page carries 90% of traffic".
+  - Monitor checks, marking each hypothesis written at plan time proved or not from real numbers. A breach opens
+    a triage item or uses the expedite slot.
+  - Intake, where the same signals rank the backlog.
+- **A read-only web view served by the Metronome binary,** built on the same HTTP API and event feed: each
+  workstream's board with stage columns and WIP counts, each person's inbox, and an item page with its evidence
+  timeline. Writes such as approving or answering an ask stay in the CLI and MCP server at first. Built after
+  the GitHub poller, the reviewer adapter and an intake adapter, when there is a live loop to watch.
 
 ## Decided from the SPEC review (2026-11-26), now in SPEC.md
 
@@ -144,5 +210,8 @@ Everything section 12 of SPEC.md marks Open or Unverified, plus:
 
 - The repository for the proof-of-concept pilot, and the mapping from its approver's rules to tiers 0 to 3.
 - How the local service authenticates to the approver's results.
+- When a workstream's own backlog and its subscriptions compete for one free slot, which goes first.
+- Which other kinds of identity link to support, such as agent attribution tools.
+- How the OIDC provider is configured for a self-hosted install.
 - A check failure on a slice already in review leaves it in review; only the approval waits. Whether it should
   go back to the fixer.
