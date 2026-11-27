@@ -53,6 +53,8 @@ func Tracked(sl flow.Slice) bool {
 	switch sl.Status {
 	case flow.SliceSubmitted, flow.SlicePROpen, flow.SliceInReview, flow.SliceApproved:
 		return true
+	case flow.SliceStalled:
+		return sl.PR != nil
 	}
 	return false
 }
@@ -76,6 +78,20 @@ func Reconcile(sl flow.Slice, snap *Snapshot) (actions []Action, notes []string)
 	known := sl.PR != nil && sl.PR.Repo == snap.Repo && sl.PR.Number == snap.Number
 	if snap.State != PROpen && !known {
 		note("the only PR on branch %s is %s, which Metronome never recorded for this slice; nothing recorded", sl.Branch, strings.ToLower(string(snap.State)))
+		return actions, notes
+	}
+	if sl.Status == flow.SliceStalled {
+		decision := "nothing recorded, and a person must decide, for example drop the item or reopen the work"
+		switch snap.State {
+		case PRMerged:
+			if snap.MergedBy == "" {
+				note("merged while the slice is stalled for rework, but GitHub does not say who merged it; %s", decision)
+			} else {
+				note("merged by %s while the slice is stalled for rework; Metronome does not record a merge during rework; %s", snap.MergedBy, decision)
+			}
+		case PRClosed:
+			note("closed without merging while the slice is stalled for rework; %s", decision)
+		}
 		return actions, notes
 	}
 	switch snap.State {

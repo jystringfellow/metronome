@@ -22,6 +22,12 @@ func inReview(head string) flow.Slice {
 	return sl
 }
 
+func stalled() flow.Slice {
+	sl := inReview("aaa")
+	sl.Status, sl.Rework, sl.PR.ChecksGreen = flow.SliceStalled, true, false
+	return sl
+}
+
 func reviewers(sl flow.Slice, names ...string) flow.Slice {
 	sl.Approvers = names
 	return sl
@@ -96,6 +102,16 @@ func TestReconcile(t *testing.T) {
 		{"a merge of a head Metronome has not seen records the head first", inReview("aaa"), mergedNewHead, []string{"pr-opened", "merged"}, ""},
 		{"a merge with no merger is reported, not recorded", inReview("aaa"), mergedByNobody, nil, "who merged"},
 		{"a merge while the slice is reworked is reported, not recorded", reworking, merged, nil, "merged while queued"},
+		{"a stalled slice with no PR snapshot records nothing", stalled(), nil, nil, ""},
+		{"a stalled slice's open PR records nothing, even with failed checks on its head", stalled(), open("aaa", ChecksFailure), nil, ""},
+		{"a stalled slice waits for the fixer before a new green, approved head is recorded", stalled(), open("bbb", ChecksSuccess, review("r1", "rev", ReviewApproved, "bbb", 1)), nil, ""},
+		{"a stalled slice's unchecked head is ignored", stalled(), open("bbb", ChecksNone), nil, ""},
+		{"a replacement open PR on a stalled slice's branch is ignored", stalled(), &Snapshot{Repo: "acme/app", Number: 9, HeadSHA: "bbb", State: PROpen, HeadChecks: ChecksSuccess}, nil, ""},
+		{"a merge of a stalled slice's PR is reported for a person to decide", stalled(), merged, nil, "a person must decide"},
+		{"a merge of a stalled slice's PR with no merger is reported, not recorded", stalled(), mergedByNobody, nil, "who merged"},
+		{"a close of a stalled slice's PR is reported for a person to decide", stalled(), closed, nil, "a person must decide"},
+		{"an old merged PR on a stalled slice's branch is ignored", stalled(), &Snapshot{Repo: "acme/app", Number: 9, State: PRMerged, MergedBy: "pat"}, nil, "never recorded"},
+		{"an old closed PR on a stalled slice's branch is ignored", stalled(), &Snapshot{Repo: "acme/app", Number: 9, State: PRClosed}, nil, "never recorded"},
 		{"an old merged PR on a reused branch is ignored", submitted(), merged, nil, "never recorded"},
 		{"a PR closed without merging records nothing", inReview("aaa"), closed, nil, "closed without merging"},
 		{"a head that moves after approval is reported, not recorded", approvedSlice, open("bbb", ChecksSuccess), nil, "after approval"},
@@ -108,6 +124,9 @@ func TestReconcile(t *testing.T) {
 			}
 			if c.note != "" && !strings.Contains(strings.Join(notes, "\n"), c.note) {
 				t.Fatalf("notes %v do not mention %q", notes, c.note)
+			}
+			if c.slice.Status == flow.SliceStalled && c.note == "" && len(notes) != 0 {
+				t.Fatalf("notes = %v, want none", notes)
 			}
 		})
 	}
@@ -134,6 +153,32 @@ func TestAMergeBeforeApprovalNamesTheMerger(t *testing.T) {
 	}
 }
 
+func TestAMergeOfAStalledSlicesPRNamesTheSliceThePRAndTheMerger(t *testing.T) {
+	for _, scenario := range []struct {
+		state    PRState
+		merger   string
+		expected string
+	}{
+		{PRMerged, "pat", "merged by pat"},
+		{PRMerged, "", "who merged"},
+		{PRClosed, "", "closed without merging"},
+	} {
+		t.Run(scenario.expected, func(t *testing.T) {
+			snap := open("aaa", ChecksFailure)
+			snap.State, snap.MergedBy = scenario.state, scenario.merger
+			actions, notes := Reconcile(stalled(), snap)
+			if len(actions) != 0 || len(notes) != 1 {
+				t.Fatalf("actions = %v, notes = %v, want one note only", actions, notes)
+			}
+			for _, want := range []string{"I1.1", "acme/app#7", scenario.expected, "a person must decide"} {
+				if !strings.Contains(notes[0], want) {
+					t.Errorf("note %q does not mention %q", notes[0], want)
+				}
+			}
+		})
+	}
+}
+
 func TestRequestIDsChangeWithTheSliceVersionSoTheSameFactCanBeRecordedAgain(t *testing.T) {
 	earlier := submitted()
 	later := submitted()
@@ -147,7 +192,7 @@ func TestRequestIDsChangeWithTheSliceVersionSoTheSameFactCanBeRecordedAgain(t *t
 	}
 }
 
-func TestOnlyWaitingSlicesWithABranchAreTracked(t *testing.T) {
+func TestOnlyWaitingSlicesAndStalledSlicesWithAPRAreTracked(t *testing.T) {
 	for status, want := range map[flow.SliceStatus]bool{
 		flow.SliceQueued: false, flow.SliceRunning: false, flow.SliceFlagged: false, flow.SliceStalled: false,
 		flow.SliceSubmitted: true, flow.SlicePROpen: true, flow.SliceInReview: true, flow.SliceApproved: true, flow.SliceMerged: false,
@@ -162,5 +207,25 @@ func TestOnlyWaitingSlicesWithABranchAreTracked(t *testing.T) {
 	sl.Branch = ""
 	if Tracked(sl) {
 		t.Error("a slice with no branch is tracked")
+	}
+	if !Tracked(stalled()) {
+		t.Error("a stalled slice with a PR is not tracked")
+	}
+	for _, status := range []flow.SliceStatus{flow.SliceQueued, flow.SliceRunning, flow.SliceFlagged, flow.SliceMerged} {
+		sl := stalled()
+		sl.Status = status
+		if Tracked(sl) {
+			t.Errorf("a %s slice with a PR is tracked", status)
+		}
+	}
+	sl = stalled()
+	sl.Branch = ""
+	if Tracked(sl) {
+		t.Error("a stalled slice with no branch is tracked")
+	}
+	sl = stalled()
+	sl.Repo = ""
+	if Tracked(sl) {
+		t.Error("a stalled slice with no repo is tracked")
 	}
 }
