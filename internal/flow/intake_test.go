@@ -56,7 +56,7 @@ func TestIntakeReranksAndUpdatesReadyItems(t *testing.T) {
 	items[2].Owner = "example"
 	result := h.intake(items...)
 	wantEventTypes(t, result, flow.EvItemUpdated, flow.EvItemUpdated)
-	wantNote(t, result, "intake updates only rank, title and intent")
+	wantNote(t, result, "intake updates only rank, title, intent and labels")
 	if it := h.item("I1"); it.Rank != 2 || it.Intent != "new intent" {
 		t.Fatal(it)
 	}
@@ -139,10 +139,16 @@ func TestIntakeRespectsClaimsInTheSource(t *testing.T) {
 
 func TestIntakeIsIdempotentAndReplays(t *testing.T) {
 	h := newHarness(t, nil)
-	h.intake(sourceItems(1, 2, 3)...)
+	initial := sourceItems(1, 2, 3)
+	initial[0].Labels = []string{"old"}
+	initial[2].Labels = []string{"shelved"}
+	h.intake(initial...)
 	h.intake(sourceItems(1, 2)...)
 	items := sourceItems(3, 1, 4)
 	items[1].Intent = "updated"
+	items[0].Labels = []string{"Report", "slow"}
+	items[1].Labels = []string{"business"}
+	items[2].Labels = []string{"new"}
 	wantEventTypes(t, h.intake(items...), flow.EvItemUpdated, flow.EvItemShelved, flow.EvItemRestored, flow.EvItemAdded)
 	before := h.eng.EventsAfter(0, 0)
 	wantEventTypes(t, h.intake(items...))

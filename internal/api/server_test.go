@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -155,6 +156,9 @@ func TestBoardAssets(t *testing.T) {
 		}
 	}
 	script := assets["/board.js"]
+	if !strings.Contains(script, "item.labels") {
+		t.Error("board script missing item labels")
+	}
 	for _, text := range []string{"innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval(", "new Function", "method:", "POST", "XMLHttpRequest", "WebSocket"} {
 		if strings.Contains(script, text) {
 			t.Errorf("script contains %q", text)
@@ -236,7 +240,7 @@ func TestBoardData(t *testing.T) {
 	}
 	backlog := filepath.Join(dir, "backlog.json")
 	slices := filepath.Join(dir, "slices.json")
-	if err := os.WriteFile(backlog, []byte(`{"items":[{"ref":"ACME-1","title":"Export reports","owner":"pat","predicted_tier":1}]}`), 0o600); err != nil {
+	if err := os.WriteFile(backlog, []byte(`{"items":[{"ref":"ACME-1","title":"Export reports","owner":"pat","predicted_tier":1,"labels":[" Slow ","business"]}]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(slices, []byte(`[{"title":"CSV export","repo":"acme/app","criteria":["exports CSV"],"approvers":["rev"]}]`), 0o600); err != nil {
@@ -270,6 +274,30 @@ func TestBoardData(t *testing.T) {
 	}
 	if board.Limits != flow.DefaultConfig().Limits || board.Usage.Execute != 1 || board.Usage.Review != 1 || board.Usage.PerApprover == nil {
 		t.Fatalf("unexpected limits or usage: %s", body)
+	}
+	if !reflect.DeepEqual(board.Items[0].Labels, []string{"business", "slow"}) {
+		t.Fatal(board.Items[0].Labels)
+	}
+	for _, query := range []string{"label=slow", "label=SLOW", "label=slow&workstream=default"} {
+		resp, body := request(t, server, http.MethodGet, "/v1/board?"+query)
+		var filtered api.Board
+		if err := json.Unmarshal(body, &filtered); err != nil || resp.StatusCode != 200 || !reflect.DeepEqual(board, filtered) {
+			t.Fatalf("%s: %d %s: %v", query, resp.StatusCode, body, err)
+		}
+	}
+	resp, body = request(t, server, http.MethodGet, "/v1/board?label=missing")
+	var filtered api.Board
+	if err := json.Unmarshal(body, &filtered); err != nil || resp.StatusCode != 200 ||
+		!reflect.DeepEqual(filtered.Items, []flow.Item{}) || !reflect.DeepEqual(filtered.Slices, []flow.Slice{}) ||
+		!reflect.DeepEqual(filtered.Runs, []flow.Run{}) || !reflect.DeepEqual(filtered.Flags, []flow.Flag{}) ||
+		!reflect.DeepEqual(board.Usage, filtered.Usage) || !reflect.DeepEqual(board.Workstreams, filtered.Workstreams) || board.Limits != filtered.Limits {
+		t.Fatalf("nonmatching label: %d %s: %v", resp.StatusCode, body, err)
+	}
+	for _, query := range []string{"label=a,b", "label="} {
+		resp, body := request(t, server, http.MethodGet, "/v1/board?"+query)
+		if resp.StatusCode != 400 || !strings.Contains(string(body), `"code":"invalid"`) {
+			t.Fatalf("invalid label: %d %s", resp.StatusCode, body)
+		}
 	}
 	readEvents := func(path string) []flow.Event {
 		t.Helper()

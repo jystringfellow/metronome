@@ -32,7 +32,7 @@ Service:
   serve [--addr 127.0.0.1:7340] [--db metronome.db] [--tick 30s]  also serves a read-only board page at /
 
 Looking:
-  board [--workstream NAME] [--json]  limits, usage, items, slices, open runs and asks
+  board [--workstream NAME] [--label L] [--json]  limits, usage, items, slices, open runs and asks
   inbox OWNER                     open asks for one person, oldest first
   events [--after SEQ]            the event log
 
@@ -44,7 +44,7 @@ Workstreams:
 Backlog and plan:
   backlog sync [--workstream NAME] FILE  add ranked items (default workstream if omitted)
                          skips items with "claimed_by" set
-                         items may carry "slices" (as plan propose) and an optional "predicted_tier" (default 1); see docs/backlog.md
+                         items may carry "labels", "slices" (as plan propose) and an optional "predicted_tier" (default 1); see docs/backlog.md
   intake --workstream NAME [--every D] -- CMD [ARGS...]  mirror Ready from a source command; see docs/intake.md
   plan start [--workstream NAME] [ITEM]  pull the top ready item with capacity
                          an item with backlog slices is proposed and its owner asked to approve
@@ -257,12 +257,19 @@ func (a *app) serve(ctx context.Context, args []string) error {
 func (a *app) board(ctx context.Context, args []string) error {
 	fs := newFlags("board")
 	ws := fs.String("workstream", "", "")
+	label := fs.String("label", "", "")
 	asJSON := fs.Bool("json", false, "")
 	if err := parse(fs, args, 0); err != nil {
 		return err
 	}
 	var b api.Board
-	if err := a.client.Get(ctx, "/v1/board?workstream="+url.QueryEscape(*ws), &b); err != nil {
+	query := url.Values{"workstream": {*ws}}
+	fs.Visit(func(option *flag.Flag) {
+		if option.Name == "label" {
+			query.Set("label", *label)
+		}
+	})
+	if err := a.client.Get(ctx, "/v1/board?"+query.Encode(), &b); err != nil {
 		return err
 	}
 	if *asJSON {
@@ -278,7 +285,7 @@ func (a *app) board(ctx context.Context, args []string) error {
 		l, u := ws.Limits, ws.Usage
 		fmt.Fprintf(a.out, "workstream %s  ready %d/%d  plan %d/%d  execute %d/%d  review %d/%d  release %d/%d\n", ws.Name, u.Ready, l.Ready, u.Plan, l.Plan, u.Execute, l.Execute, u.Review, l.Review, u.Release, l.Release)
 		tw := tabwriter.NewWriter(a.out, 0, 2, 2, ' ', 0)
-		fmt.Fprintln(tw, "\nITEM\tSTATUS\tTIER\tOWNER\tTITLE")
+		fmt.Fprintln(tw, "\nITEM\tSTATUS\tTIER\tOWNER\tLABELS\tTITLE")
 		for _, it := range b.Items {
 			if it.Workstream != ws.Name {
 				continue
@@ -286,7 +293,7 @@ func (a *app) board(ctx context.Context, args []string) error {
 			if it.Status == flow.ItemDone || it.Status == flow.ItemDropped || it.Status == flow.ItemShelved {
 				continue
 			}
-			fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%s\n", it.ID, it.Status, it.PredictedTier, it.Owner, it.Title)
+			fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%s\t%s\n", it.ID, it.Status, it.PredictedTier, it.Owner, dash(strings.Join(it.Labels, ", ")), it.Title)
 		}
 		fmt.Fprintln(tw, "\nSLICE\tSTATUS\tSLOTS\tRUN\tPR\tTITLE")
 		for _, sl := range b.Slices {
@@ -512,10 +519,11 @@ type briefSlice struct {
 }
 
 type briefItem struct {
-	ID     string `json:"id"`
-	Ref    string `json:"ref"`
-	Title  string `json:"title"`
-	Intent string `json:"intent"`
+	ID     string   `json:"id"`
+	Ref    string   `json:"ref"`
+	Title  string   `json:"title"`
+	Intent string   `json:"intent"`
+	Labels []string `json:"labels"`
 }
 
 type briefHistory struct {
@@ -580,7 +588,7 @@ func (a *app) readBrief(ctx context.Context, c flow.Claim) (brief, error) {
 					Claim: briefClaim{Workstream: c.Workstream, RunID: c.RunID, SliceID: c.SliceID, LeaseUntil: c.LeaseUntil.UTC()},
 					Slice: briefSlice{ID: sl.ID, Repo: sl.Repo, Title: sl.Title,
 						Criteria: append([]string{}, sl.Criteria...), Approvers: append([]string{}, sl.Approvers...)},
-					Item:    briefItem{ID: it.ID, Ref: it.Ref, Title: it.Title, Intent: it.Intent},
+					Item:    briefItem{ID: it.ID, Ref: it.Ref, Title: it.Title, Intent: it.Intent, Labels: append([]string{}, it.Labels...)},
 					History: newBriefHistory(snapshot),
 				}, nil
 			}
@@ -601,6 +609,9 @@ func (b brief) writeText(w io.Writer) error {
 		intent = "none given"
 	}
 	fmt.Fprintf(&text, "intent:    %s\n", strings.ReplaceAll(intent, "\n", "\n           "))
+	if len(b.Item.Labels) > 0 {
+		fmt.Fprintf(&text, "labels:    %s\n", strings.Join(b.Item.Labels, ", "))
+	}
 	if len(b.Slice.Criteria) == 0 {
 		fmt.Fprintln(&text, "criteria:  none given")
 	} else {

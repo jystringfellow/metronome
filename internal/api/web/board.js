@@ -73,8 +73,8 @@ function activeTable(all, active, columns, rows, empty, hiddenLabel) {
 
 function itemsView(items) {
   return activeTable(items, items.filter(item => !['done', 'dropped'].includes(item.status)),
-    [['ID / Ref'], ['Status'], ['Tier'], ['Owner'], ['Title', 'wrap']],
-    item => [[item.id, item.ref].filter(Boolean).join(' '), item.status, item.predicted_tier, item.owner, item.title],
+    [['ID / Ref'], ['Status'], ['Tier'], ['Owner'], ['Labels', 'wrap'], ['Title', 'wrap']],
+    item => [[item.id, item.ref].filter(Boolean).join(' '), item.status, item.predicted_tier, item.owner, (item.labels || []).join(', ') || '-', item.title],
     'No items', 'done or dropped');
 }
 

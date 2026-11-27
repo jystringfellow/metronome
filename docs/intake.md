@@ -62,7 +62,7 @@ take an unmarked item before either publishes its marker. Resolving that race re
 | Local item status | Intake behaviour |
 | --- | --- |
 | Unknown | Add unclaimed items in source order when Ready has room. |
-| Ready | Update rank, title and intent; shelve items missing from the list or claimed elsewhere. |
+| Ready | Update rank, title, intent and labels; shelve items missing from the list or claimed elsewhere. |
 | Shelved | Restore the same item ID when listed unclaimed and Ready has room. |
 | Planning, executing, awaiting release, releasing | Keep unchanged; report a disappearance or foreign claim. |
 | Done or dropped | Ignore. |
