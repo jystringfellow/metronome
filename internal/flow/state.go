@@ -57,6 +57,8 @@ type Item struct {
 	Owner         string      `json:"owner"`
 	Value         float64     `json:"value"`
 	PredictedTier int         `json:"predicted_tier"`
+	TierDefaulted bool        `json:"tier_defaulted,omitempty"`
+	PlannedSlices []SliceSpec `json:"planned_slices,omitempty"`
 	ConfirmedTier int         `json:"confirmed_tier"`
 	Rank          int         `json:"rank"`
 	Status        ItemStatus  `json:"status"`

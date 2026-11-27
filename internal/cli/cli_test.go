@@ -26,6 +26,8 @@ type env struct {
 	dir  string
 }
 
+func intp(tier int) *int { return &tier }
+
 type handlerTransport struct{ h http.Handler }
 
 func (ht handlerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
@@ -179,6 +181,98 @@ func TestSliceDependenciesFromTheCommandLine(t *testing.T) {
 	}
 }
 
+func TestPrePlannedBacklogFromTheCommandLine(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "metronome.db")
+	db, err := store.OpenSQLite(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	e := newEnvWithStore(t, db)
+	backlog := filepath.Join(e.dir, "backlog.json")
+	if err := os.WriteFile(backlog, []byte(`{
+  "workstream": "default",
+  "items": [
+    {
+      "ref": "ACME-1",
+      "title": "Add export",
+      "intent": "Let people save their records",
+      "owner": "pat",
+      "value": 5,
+      "slices": [
+        {"title": "Export API", "repo": "acme/app"},
+        {
+          "title": "Export page",
+          "repo": "acme/web",
+          "criteria": ["Records can be saved as a file"],
+          "approvers": ["rev"],
+          "after": [1]
+        }
+      ]
+    },
+    {"ref": "ACME-2", "title": "Update docs", "owner": "pat"}
+  ]
+}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	e.ok("pat", "backlog", "sync", backlog)
+	e.ok("agent", "plan", "start")
+	if out := e.ok("pat", "inbox", "pat"); !strings.Contains(out, "Approve the plan for") || !strings.Contains(out, "confirm tier 1") {
+		t.Fatal(out)
+	}
+	e.ok("pat", "plan", "approve", "I1")
+	board := e.board()
+	if len(board.Items) != 2 || len(board.Slices) != 2 || len(board.Items[0].PlannedSlices) != 2 || !board.Items[0].TierDefaulted || board.Items[0].ConfirmedTier != 1 || board.Items[1].PredictedTier != 1 || len(board.Items[1].PlannedSlices) != 0 {
+		t.Fatalf("board = %+v", board)
+	}
+	if slice := board.Slices[1]; slice.ID != "I1.2" || len(slice.After) != 1 || slice.After[0] != "I1.1" {
+		t.Fatalf("dependent slice = %+v", slice)
+	}
+	textBoard := e.ok("pat", "board")
+	if !strings.Contains(textBoard, "queued (waits on I1.1)") {
+		t.Fatal(textBoard)
+	}
+	jsonBoard := e.ok("pat", "board", "--json")
+	if !strings.Contains(jsonBoard, `"planned_slices"`) {
+		t.Fatal(jsonBoard)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := store.OpenSQLite(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	e = newEnvWithStore(t, reopened)
+	if got := e.ok("pat", "board", "--json"); got != jsonBoard {
+		t.Fatalf("board changed after reopening database:\n%s\n%s", jsonBoard, got)
+	}
+	for _, test := range []struct{ name, payload, message string }{
+		{"invalid", `{"items":[{"ref":"ACME-3","title":"example","owner":"pat","slices":[{"title":"example"}]}]}`, `invalid: backlog item "ACME-3"`},
+		{"unknown field", `{"items":[{"ref":"ACME-3","title":"example","owner":"pat","slices":[{"title":"example","repo":"acme/app","order":1}]}]}`, `unknown field "order"`},
+	} {
+		file := filepath.Join(e.dir, "bad.json")
+		if err := os.WriteFile(file, []byte(test.payload), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if out, code := e.run("pat", "backlog", "sync", file); code != 1 || !strings.Contains(out, test.message) {
+			t.Fatalf("%s: exit %d: %s", test.name, code, out)
+		}
+	}
+	nullTier := filepath.Join(e.dir, "null-tier.json")
+	if err := os.WriteFile(nullTier, []byte(`{"items":[{"ref":"ACME-3","title":"example","owner":"pat","predicted_tier":null}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	e.ok("pat", "backlog", "sync", nullTier)
+	if item := e.board().Items[2]; item.PredictedTier != 1 || !item.TierDefaulted {
+		t.Fatalf("null tier item = %+v", item)
+	}
+	if out := e.ok("pat", "help"); !strings.Contains(out, `"slices"`) || !strings.Contains(out, "docs/backlog.md") {
+		t.Fatal(out)
+	}
+}
+
 func (e *env) approvedItem(item flow.BacklogItem, slices []flow.SliceSpec) {
 	e.t.Helper()
 	e.ok("pat", "backlog", "sync", e.file("backlog.json", api.BacklogRequest{Items: []flow.BacklogItem{item}}))
@@ -191,7 +285,7 @@ func newBriefEnv(t *testing.T) *env {
 	t.Helper()
 	e := newEnv(t)
 	e.approvedItem(flow.BacklogItem{
-		Ref: "ACME-1", Title: "Add export", Intent: "Let customers download their data\nInclude all records", Owner: "pat", PredictedTier: 1,
+		Ref: "ACME-1", Title: "Add export", Intent: "Let customers download their data\nInclude all records", Owner: "pat", PredictedTier: intp(1),
 	}, []flow.SliceSpec{
 		{Title: "API endpoint", Repo: "acme/app", Criteria: []string{"GET /export returns CSV", "An empty account exports a header row\nNo data rows"}, Approvers: []string{"rev", "sam"}},
 		{Title: "Docs", Repo: "acme/docs"},
@@ -423,7 +517,7 @@ func TestNextFailsWithoutPartialBrief(t *testing.T) {
 func TestOneItemThroughTheFlowFromTheCommandLine(t *testing.T) {
 	e := newEnv(t)
 	backlog := e.file("backlog.json", api.BacklogRequest{Items: []flow.BacklogItem{
-		{Ref: "ACME-1", Title: "Add export", Owner: "pat", PredictedTier: 1},
+		{Ref: "ACME-1", Title: "Add export", Owner: "pat", PredictedTier: intp(1)},
 	}})
 	e.ok("pat", "backlog", "sync", backlog)
 	e.ok("agent", "plan", "start")
@@ -467,7 +561,7 @@ func TestOneItemThroughTheFlowFromTheCommandLine(t *testing.T) {
 
 func TestLowTierItemIsDoneAtMergeFromTheCommandLine(t *testing.T) {
 	e := newEnv(t)
-	backlog := e.file("backlog.json", api.BacklogRequest{Items: []flow.BacklogItem{{Ref: "ACME-1", Title: "Update docs", Owner: "pat", PredictedTier: 1}}})
+	backlog := e.file("backlog.json", api.BacklogRequest{Items: []flow.BacklogItem{{Ref: "ACME-1", Title: "Update docs", Owner: "pat", PredictedTier: intp(1)}}})
 	e.ok("pat", "backlog", "sync", backlog)
 	e.ok("pat", "plan", "start")
 	slices := e.file("slices.json", []flow.SliceSpec{{Title: "Docs", Repo: "acme/app"}})

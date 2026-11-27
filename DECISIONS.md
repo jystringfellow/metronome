@@ -305,6 +305,38 @@ Recorded so the data model leaves room for it. Nothing here is in the proof of c
   brief. Test dependency reporting by `next --json` and claim gating by `run` on merge. In `docs/runners.md`,
   explain that a slice with unmerged dependencies is not offered; `next --slice` on one fails with a
   conflict naming what it waits on; `no_work` may list waiting slices. Show `waits_on` on the web board.
+  Link `docs/backlog.md` from `docs/runners.md` and list it beside the brief and the run environment as an
+  additive-only contract.
+
+## Decided by the maintainer (2026-11-27): pre-planned slices in the backlog
+
+- Backlog items may carry `slices` with the fields accepted by `plan propose`. On entering Plan these
+  become the proposed plan, and the owner is asked to approve it. Items without slices behave as before.
+- `predicted_tier` is optional; when absent, the item is tier 1 and the approval asks to confirm it.
+  Previously a missing tier silently became 0. Present tiers retain their validation.
+- The backlog contract is documented in `docs/backlog.md` and is additive only. Existing logs replay unchanged.
+
+## Agent decision (2026-11-27): implementing pre-planned slices
+
+- Store optional `slices` and `tier_defaulted` on `item_added`, with the resolved tier. Emit an explicit
+  `plan_proposed` and approval ask on plan start, without changing `plan_started` replay semantics.
+- The item's owner is the plan approver; the source cannot supply a different plan approver because the
+  maintainer specified owner approval. Empty slices mean no plan, since a proposal needs at least one slice.
+- Validate all items, including known refs, before refill, matching tier validation. A known ref is skipped
+  entirely, including its slices and tier, since updating an authored plan needs a separate rule.
+- Parking clears the proposal but not the backlog slices, so re-entering Plan proposes them again. A hand
+  proposal supersedes the current proposal, preserving the existing plan replacement behaviour.
+- Keep the approval question's prefix and add sentences identifying a defaulted tier and backlog-supplied
+  slices, so the owner understands what is being confirmed.
+- Link the runners guide on merge: this branch lacks `docs/runners.md`, and a stub would conflict with main.
+
+## Open (2026-11-27): pre-planned slices follow-up
+
+- Should a re-sync update slices or tier of a known item that is still Ready?
+- Should a source be able to name the plan approver?
+- Should the text board show that a tier was defaulted?
+- Should slices be able to depend on another item's slices, as in a migration plan? Cross-item dependencies
+  remain open.
 
 ## Decided by the maintainer (2026-11-27): slices can depend on other slices
 
@@ -372,7 +404,8 @@ Recorded so the data model leaves room for it. Nothing here is in the proof of c
   tiers 0 and 1, see the decision of 2026-11-27.)
 - **Default:** a `comment` verdict means not approved, and the PR goes to a human per its tier. (Finding 4.)
 - **Default for the proof of concept:** the backlog is a local file. Metronome reads items from it and writes the
-  items it proposes to a separate file. The general backlog contract is still to be written. (Finding 5.)
+  items it proposes to a separate file. The read-side contract is now in `docs/backlog.md` (2026-11-27);
+  the write-side contract is still to be written. (Finding 5.)
 
 ## How the existing tools fit
 
