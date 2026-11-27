@@ -75,11 +75,12 @@ type SliceSpec struct {
 }
 
 type PR struct {
-	Repo        string `json:"repo"`
-	Number      int    `json:"number"`
-	HeadSHA     string `json:"head_sha"`
-	ApprovedSHA string `json:"approved_sha,omitempty"`
-	ChecksGreen bool   `json:"checks_green"`
+	Repo           string `json:"repo"`
+	Number         int    `json:"number"`
+	HeadSHA        string `json:"head_sha"`
+	ApprovedSHA    string `json:"approved_sha,omitempty"`
+	ChecksGreen    bool   `json:"checks_green"`
+	ChecksRecorded bool   `json:"checks_recorded"`
 }
 
 type Slice struct {
@@ -98,6 +99,7 @@ type Slice struct {
 	RunID        string      `json:"run_id,omitempty"`
 	StalledAt    time.Time   `json:"stalled_at,omitzero"`
 	Branch       string      `json:"branch,omitempty"`
+	Version      int         `json:"version"`
 	PR           *PR         `json:"pr,omitempty"`
 }
 

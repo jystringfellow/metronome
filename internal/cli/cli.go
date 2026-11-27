@@ -18,6 +18,7 @@ import (
 
 	"github.com/jystringfellow/metronome/internal/api"
 	"github.com/jystringfellow/metronome/internal/flow"
+	"github.com/jystringfellow/metronome/internal/github"
 	"github.com/jystringfellow/metronome/internal/store"
 )
 
@@ -51,7 +52,8 @@ People:
   answer FLAG TEXT
   release-done ITEM
 
-GitHub events, by hand until the poller exists:
+GitHub:
+  github poll [--every 1m]        record what GitHub shows for each submitted slice's branch, once or on a repeat
   github pr-opened --slice S --repo OWNER/NAME --number N --head SHA
   github checks --slice S --head SHA (--success | --failure)
   github ready-for-review --slice S
@@ -70,13 +72,29 @@ type app struct {
 	out, errOut io.Writer
 	client      *api.Client
 	requestID   string
+	prs         github.Source
+}
+
+type Deps struct {
+	HTTP   *http.Client
+	GitHub github.Source
 }
 
 func Run(ctx context.Context, args []string, out, errOut io.Writer) int {
-	return RunWithHTTP(ctx, args, out, errOut, &http.Client{Timeout: 30 * time.Second})
+	return RunWithDeps(ctx, args, out, errOut, Deps{})
 }
 
 func RunWithHTTP(ctx context.Context, args []string, out, errOut io.Writer, hc *http.Client) int {
+	return RunWithDeps(ctx, args, out, errOut, Deps{HTTP: hc})
+}
+
+func RunWithDeps(ctx context.Context, args []string, out, errOut io.Writer, deps Deps) int {
+	if deps.HTTP == nil {
+		deps.HTTP = &http.Client{Timeout: 30 * time.Second}
+	}
+	if deps.GitHub == nil {
+		deps.GitHub = github.GH{}
+	}
 	global := flag.NewFlagSet("metronome", flag.ContinueOnError)
 	global.SetOutput(errOut)
 	global.Usage = func() { fmt.Fprint(errOut, usage) }
@@ -91,8 +109,8 @@ func RunWithHTTP(ctx context.Context, args []string, out, errOut io.Writer, hc *
 		global.Usage()
 		return 2
 	}
-	a := &app{out: out, errOut: errOut, requestID: *requestID,
-		client: &api.Client{BaseURL: *server, Actor: *actor, HTTP: hc}}
+	a := &app{out: out, errOut: errOut, requestID: *requestID, prs: deps.GitHub,
+		client: &api.Client{BaseURL: *server, Actor: *actor, HTTP: deps.HTTP}}
 	if err := a.dispatch(ctx, rest[0], rest[1:]); err != nil {
 		var ue usageError
 		if errors.As(err, &ue) {
@@ -471,6 +489,9 @@ func (a *app) github(ctx context.Context, args []string) error {
 		return usagef("usage: github EVENT [flags]")
 	}
 	event, args := args[0], args[1:]
+	if event == "poll" {
+		return a.githubPoll(ctx, args)
+	}
 	fs := newFlags("github " + event)
 	var req api.GitHubRequest
 	fs.StringVar(&req.SliceID, "slice", "", "")
@@ -488,6 +509,55 @@ func (a *app) github(ctx context.Context, args []string) error {
 	}
 	req.Success = *success
 	return a.post(ctx, "/v1/github/"+event, req)
+}
+
+func (a *app) githubPoll(ctx context.Context, args []string) error {
+	fs := newFlags("github poll")
+	every := fs.Duration("every", 0, "")
+	if err := parse(fs, args, 0); err != nil {
+		return err
+	}
+	if *every < 0 {
+		return usagef("--every must be positive")
+	}
+	p := github.Poller{Client: a.client, Source: a.prs}
+	if *every == 0 {
+		return a.pollOnce(ctx, p)
+	}
+	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	t := time.NewTicker(*every)
+	defer t.Stop()
+	for {
+		if err := a.pollOnce(ctx, p); err != nil {
+			fmt.Fprintf(a.errOut, "poll: %v\n", err)
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-t.C:
+		}
+	}
+}
+
+func (a *app) pollOnce(ctx context.Context, p github.Poller) error {
+	res, err := p.Once(ctx)
+	if err != nil {
+		return err
+	}
+	for _, act := range res.Recorded {
+		fmt.Fprintln(a.out, "recorded "+act.String())
+	}
+	for _, n := range res.Notes {
+		fmt.Fprintln(a.out, "note "+n)
+	}
+	for _, e := range res.Errors {
+		fmt.Fprintln(a.errOut, "error "+e)
+	}
+	if len(res.Errors) > 0 {
+		return fmt.Errorf("%d slice(s) could not be polled", len(res.Errors))
+	}
+	return nil
 }
 
 func (a *app) post(ctx context.Context, path string, body any) error {
