@@ -30,6 +30,11 @@ type BacklogRequest struct {
 	Items      []flow.BacklogItem `json:"items"`
 }
 
+type IntakeRequest struct {
+	Workstream string              `json:"workstream"`
+	Items      *[]flow.BacklogItem `json:"items"`
+}
+
 type PlanStartRequest struct {
 	Workstream string `json:"workstream"`
 	ItemID     string `json:"item_id"`
@@ -105,6 +110,12 @@ func Handler(eng *flow.Engine) http.Handler {
 	mux.HandleFunc("POST /v1/tick", s.tick)
 	mux.HandleFunc("POST /v1/backlog/sync", command(func(r *http.Request, c call, req BacklogRequest) (flow.Result, error) {
 		return eng.SyncBacklog(r.Context(), c.actor, c.requestID, req.Workstream, req.Items)
+	}))
+	mux.HandleFunc("POST /v1/backlog/intake", command(func(r *http.Request, c call, req IntakeRequest) (flow.Result, error) {
+		if req.Items == nil {
+			return flow.Result{}, &flow.Error{Code: flow.CodeInvalid, Message: "intake needs an items array"}
+		}
+		return eng.IntakeBacklog(r.Context(), c.actor, c.requestID, req.Workstream, *req.Items)
 	}))
 	mux.HandleFunc("POST /v1/plan/start", command(func(r *http.Request, c call, req PlanStartRequest) (flow.Result, error) {
 		return eng.StartPlan(r.Context(), c.actor, c.requestID, req.Workstream, req.ItemID)

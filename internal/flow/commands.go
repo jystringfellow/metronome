@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -18,6 +19,7 @@ type BacklogItem struct {
 	Value         float64     `json:"value"`
 	PredictedTier *int        `json:"predicted_tier,omitempty"`
 	Slices        []SliceSpec `json:"slices,omitempty"`
+	ClaimedBy     string      `json:"claimed_by,omitempty"`
 }
 
 type workstreamLimits struct {
@@ -81,17 +83,13 @@ func (e *Engine) SyncBacklog(ctx context.Context, actor, requestID, workstream s
 		for _, it := range d.s.Items {
 			known[it.Ref] = true
 		}
-		for i, bi := range items {
-			if bi.Ref == "" || bi.Title == "" || bi.Owner == "" {
-				return fail(CodeInvalid, "backlog item %d needs ref, title and owner", i+1)
-			}
-			if bi.PredictedTier != nil && (*bi.PredictedTier < 0 || *bi.PredictedTier > 3) {
-				return fail(CodeInvalid, "backlog item %q has tier %d, want 0 to 3", bi.Ref, *bi.PredictedTier)
-			}
-			if len(bi.Slices) > 0 {
-				if err := validateSpecs(bi.Slices); err != nil {
-					return fail(CodeInvalid, "backlog item %q: %s", bi.Ref, err.(*Error).Message)
-				}
+		if err := validateBacklog(items); err != nil {
+			return err
+		}
+		for _, bi := range items {
+			if bi.ClaimedBy != "" {
+				d.note("%s is claimed by %s in the source; skipped", bi.Ref, bi.ClaimedBy)
+				known[bi.Ref] = true
 			}
 		}
 		ready := d.s.StageUsage(workstream).Ready
@@ -106,20 +104,148 @@ func (e *Engine) SyncBacklog(ctx context.Context, actor, requestID, workstream s
 				continue
 			}
 			known[bi.Ref] = true
-			tier := 1
-			if bi.PredictedTier != nil {
-				tier = *bi.PredictedTier
-			}
-			d.emit(EvItemAdded, itemAdded{
-				Workstream: workstream,
-				ItemID:     d.nextItemID(), Ref: bi.Ref, Title: bi.Title, Intent: bi.Intent, Owner: bi.Owner,
-				Value: bi.Value, PredictedTier: tier, Rank: i + 1,
-				Slices: bi.Slices, TierDefaulted: bi.PredictedTier == nil,
-			})
+			d.addBacklogItem(workstream, bi, i+1)
 			ready++
 		}
 		return nil
 	})
+}
+
+func validateBacklog(items []BacklogItem) error {
+	for i, bi := range items {
+		if bi.Ref == "" || bi.Title == "" || bi.Owner == "" {
+			return fail(CodeInvalid, "backlog item %d needs ref, title and owner", i+1)
+		}
+		if bi.PredictedTier != nil && (*bi.PredictedTier < 0 || *bi.PredictedTier > 3) {
+			return fail(CodeInvalid, "backlog item %q has tier %d, want 0 to 3", bi.Ref, *bi.PredictedTier)
+		}
+		if len(bi.Slices) > 0 {
+			if err := validateSpecs(bi.Slices); err != nil {
+				return fail(CodeInvalid, "backlog item %q: %s", bi.Ref, err.(*Error).Message)
+			}
+		}
+	}
+	return nil
+}
+
+func (d *decider) addBacklogItem(workstream string, bi BacklogItem, rank int) {
+	tier := 1
+	if bi.PredictedTier != nil {
+		tier = *bi.PredictedTier
+	}
+	d.emit(EvItemAdded, itemAdded{
+		Workstream: workstream,
+		ItemID:     d.nextItemID(), Ref: bi.Ref, Title: bi.Title, Intent: bi.Intent, Owner: bi.Owner,
+		Value: bi.Value, PredictedTier: tier, Rank: rank,
+		Slices: bi.Slices, TierDefaulted: bi.PredictedTier == nil,
+	})
+}
+
+func (e *Engine) IntakeBacklog(ctx context.Context, actor, requestID, workstream string, items []BacklogItem) (Result, error) {
+	return e.execute(ctx, actor, requestID, func(d *decider) error {
+		if workstream == "" {
+			return fail(CodeInvalid, "intake needs a workstream")
+		}
+		ws := d.s.Workstreams[workstream]
+		if ws == nil {
+			return errUnknown("workstream", workstream)
+		}
+		if err := validateBacklog(items); err != nil {
+			return err
+		}
+		positions := map[string]int{}
+		for i, bi := range items {
+			if positions[bi.Ref] != 0 {
+				return fail(CodeInvalid, "repeated backlog ref %q", bi.Ref)
+			}
+			positions[bi.Ref] = i + 1
+		}
+		known := map[string]*Item{}
+		var existing []*Item
+		for _, it := range d.s.Items {
+			known[it.Ref] = it
+			if it.Workstream == workstream {
+				existing = append(existing, it)
+			}
+		}
+		sort.Slice(existing, func(i, j int) bool { return existing[i].ID < existing[j].ID })
+		ready := d.s.StageUsage(workstream).Ready
+		for _, it := range existing {
+			rank := positions[it.Ref]
+			var bi BacklogItem
+			if rank != 0 {
+				bi = items[rank-1]
+			}
+			switch it.Status {
+			case ItemReady:
+				switch {
+				case rank == 0:
+					d.emit(EvItemShelved, itemShelved{ItemID: it.ID, Reason: "missing"})
+					d.note("%s (%s) is no longer in the source; shelved", it.Ref, it.ID)
+					ready--
+				case bi.ClaimedBy != "":
+					d.emit(EvItemShelved, itemShelved{ItemID: it.ID, Reason: "claimed", ClaimedBy: bi.ClaimedBy})
+					d.note("%s (%s) is claimed by %s in the source; shelved", it.Ref, it.ID, bi.ClaimedBy)
+					ready--
+				default:
+					if it.Rank != rank || it.Title != bi.Title || it.Intent != bi.Intent {
+						d.emit(EvItemUpdated, itemUpdated{ItemID: it.ID, Rank: rank, Title: bi.Title, Intent: bi.Intent})
+					}
+					d.noteBacklogDifferences(it, bi)
+				}
+			case ItemPlanning, ItemExecuting, ItemAwaitingRelease, ItemReleasing:
+				if rank == 0 {
+					d.note("%s (%s, %s) is no longer in the source; Metronome keeps it; a person must decide", it.Ref, it.ID, it.Status)
+				} else if bi.ClaimedBy != "" {
+					d.note("%s (%s, %s) is claimed by %s in the source but held here; a person must decide", it.Ref, it.ID, it.Status, bi.ClaimedBy)
+				}
+			}
+		}
+		refill := ready < d.cfg.Limits.ReadyRefillBelow
+		waiting := 0
+		for i, bi := range items {
+			it := known[bi.Ref]
+			if it != nil && it.Workstream != workstream {
+				d.note("%s is in workstream %s; not synced", bi.Ref, it.Workstream)
+				continue
+			}
+			if it != nil && it.Status != ItemShelved {
+				continue
+			}
+			if bi.ClaimedBy != "" {
+				d.note("%s is claimed by %s in the source; skipped", bi.Ref, bi.ClaimedBy)
+				continue
+			}
+			if !refill || ready >= ws.Limits.Ready {
+				waiting++
+				continue
+			}
+			if it == nil {
+				d.addBacklogItem(workstream, bi, i+1)
+			} else {
+				d.emit(EvItemRestored, itemUpdated{ItemID: it.ID, Rank: i + 1, Title: bi.Title, Intent: bi.Intent})
+				d.noteBacklogDifferences(it, bi)
+			}
+			ready++
+		}
+		if waiting > 0 {
+			d.note("%d source items wait for Ready room (Ready %d of %d, refill below %d)", waiting, ready, ws.Limits.Ready, d.cfg.Limits.ReadyRefillBelow)
+		}
+		return nil
+	})
+}
+
+func (d *decider) noteBacklogDifferences(it *Item, bi BacklogItem) {
+	tier := 1
+	if bi.PredictedTier != nil {
+		tier = *bi.PredictedTier
+	}
+	sameSlices := slices.EqualFunc(it.PlannedSlices, bi.Slices, func(left, right SliceSpec) bool {
+		return left.Title == right.Title && left.Repo == right.Repo && slices.Equal(left.Criteria, right.Criteria) && slices.Equal(left.Approvers, right.Approvers) && slices.Equal(left.After, right.After)
+	})
+	if it.Owner != bi.Owner || it.Value != bi.Value || it.PredictedTier != tier || it.TierDefaulted != (bi.PredictedTier == nil) || !sameSlices {
+		d.note("%s (%s): the source changed owner, value, tier or slices; intake updates only rank, title and intent", it.Ref, it.ID)
+	}
 }
 
 func (e *Engine) StartPlan(ctx context.Context, actor, requestID, workstream, itemID string) (Result, error) {

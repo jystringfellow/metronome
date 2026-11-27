@@ -243,6 +243,49 @@ Recorded so the data model leaves room for it. Nothing here is in the proof of c
 - Should slices be able to depend on another item's slices, as in a migration plan? Cross-item dependencies
   remain open.
 
+## Decided by the maintainer (2026-11-27): intake runs a source command
+
+- The source owns the backlog. `metronome intake --workstream NAME [--every D] -- CMD` reads backlog JSON
+  from CMD's stdout, once or periodically, without holding source credentials. Stderr passes through;
+  a failed command or invalid result syncs nothing, reports the error and does not stop a periodic loop.
+- Intake mirrors the source: add within Ready limits, rerank and update Ready titles and intent, and remove
+  missing items from Ready. Work in Plan or later is never automatically dropped; report a disappearance.
+  Report and skip claims held by other instances, local or hosted. Repeating the same sync is idempotent.
+
+## Agent decision (2026-11-27): implementing intake
+
+- Shelve rather than drop missing Ready items, preserving their identity for later restoration. The existing
+  `item_parked` event returns an item to the front of Ready, so shelving has its own status and additive
+  events. Hide shelves from the text board, but retain them in JSON and replay. The stored reason and claimant
+  describe the shelving event, not a continuously updated source observation.
+- Shelve before refill so newly freed room is usable immediately. Add and restore in source order under
+  the existing refill threshold and Ready limit. Never evict an existing Ready item merely to make room
+  for a higher-ranked new one; retain front priority for parked items.
+- Update only rank, title and intent on Ready items, including on restoration. Report changes to owner,
+  value, tier or slices instead of deciding the open question about changing those fields.
+- A foreign claim shelves a Ready item and prevents adding or restoring it. A foreign claim or disappearance
+  in Plan or later produces a note, leaving authored work intact. Done and dropped items need no note.
+  Report cross-workstream refs rather than moving them. Add-only `backlog sync` also skips foreign claims.
+  In add-only sync, a reported foreign claim takes precedence over duplicate unmarked entries for that ref.
+- Require a workstream and a non-null `items` array for intake, and reject repeated refs: there must be a
+  single unambiguous, complete ranked list before removing work. Preserve add-only sync's existing defaults.
+- Pass `METRONOME_WORKSTREAM` and the temporary `METRONOME_ITEMS` snapshot to the command so it can publish
+  and recognise its own claims with its own credentials. `claimed_by` identifies someone else's claim.
+  Metronome never writes to the source, preserving the decision that status mirroring is a team's skill or plugin.
+- Refuse `--request-id` on intake because reusing one ID would suppress later rounds. Return informational
+  notes in optional `Result.notes` to make skips and conflicts visible even when there are no events.
+
+## Open (2026-11-27): intake follow-up
+
+- Two instances can take an unmarked item before either source command publishes a claim. Should Metronome
+  detect this or write the marker itself?
+- Should a higher-ranked new item displace a lower-ranked Ready one?
+- Should intake update owner, value, tier or slices of Ready items?
+- Should shelved items expire?
+- Should an intake command have a timeout?
+- On merge with main, link `docs/intake.md` from `docs/runners.md` and list it alongside `docs/backlog.md`
+  as an additive-only contract. This branch lacks the runners guide; do not create a conflicting stub.
+
 ## Decided by the maintainer (2026-11-27): slices can depend on other slices
 
 - A proposed slice may list `after`, 1-based positions of slices of the same item that must merge first.

@@ -20,6 +20,9 @@ const (
 	EvWorkstreamCreated   = "workstream_created"
 	EvWorkstreamLimitsSet = "workstream_limits_set"
 	EvItemAdded           = "item_added"
+	EvItemUpdated         = "item_updated"
+	EvItemShelved         = "item_shelved"
+	EvItemRestored        = "item_restored"
 	EvPlanStarted         = "plan_started"
 	EvPlanProposed        = "plan_proposed"
 	EvPlanApproved        = "plan_approved"
@@ -68,6 +71,19 @@ type itemAdded struct {
 
 type itemRef struct {
 	ItemID string `json:"item_id"`
+}
+
+type itemUpdated struct {
+	ItemID string `json:"item_id"`
+	Rank   int    `json:"rank"`
+	Title  string `json:"title"`
+	Intent string `json:"intent"`
+}
+
+type itemShelved struct {
+	ItemID    string `json:"item_id"`
+	Reason    string `json:"reason"`
+	ClaimedBy string `json:"claimed_by,omitempty"`
 }
 
 type planProposed struct {
@@ -210,6 +226,37 @@ func (s *State) apply(e Event) error {
 			PlannedSlices: p.Slices, TierDefaulted: p.TierDefaulted,
 			Status: ItemReady, AddedAt: e.At, Slices: []string{},
 		}
+	case EvItemUpdated, EvItemRestored:
+		var p itemUpdated
+		if err := json.Unmarshal(e.Data, &p); err != nil {
+			return err
+		}
+		it := s.Items[p.ItemID]
+		if it == nil {
+			return errUnknown("item", p.ItemID)
+		}
+		want := ItemReady
+		if e.Type == EvItemRestored {
+			want = ItemShelved
+		}
+		if it.Status != want {
+			return fail(CodeConflict, "item %s is %s, not %s", it.ID, it.Status, want)
+		}
+		it.Rank, it.Title, it.Intent = p.Rank, p.Title, p.Intent
+		it.Status, it.ShelvedReason, it.ClaimedBy = ItemReady, "", ""
+	case EvItemShelved:
+		var p itemShelved
+		if err := json.Unmarshal(e.Data, &p); err != nil {
+			return err
+		}
+		it := s.Items[p.ItemID]
+		if it == nil {
+			return errUnknown("item", p.ItemID)
+		}
+		if it.Status != ItemReady {
+			return fail(CodeConflict, "item %s is %s, not ready", it.ID, it.Status)
+		}
+		it.Status, it.ShelvedReason, it.ClaimedBy = ItemShelved, p.Reason, p.ClaimedBy
 	case EvPlanStarted:
 		it, err := s.itemFor(e.Data)
 		if err != nil {

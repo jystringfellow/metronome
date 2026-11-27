@@ -9,6 +9,7 @@ Metronome is a design and an early proof of concept.
 - [SPEC.md](SPEC.md): the full design.
 - [DECISIONS.md](DECISIONS.md): what has been decided, what the design review found, and what is still open.
 - [docs/backlog.md](docs/backlog.md): the backlog JSON contract.
+- [docs/intake.md](docs/intake.md): writing a source command for scheduled intake.
 
 ## What runs today
 
@@ -30,6 +31,11 @@ Until they do, claims skip it, and `board` shows what it waits on.
 Backlog items may carry pre-planned slices. `plan start` proposes them automatically and asks the item's
 owner to approve. If the backlog supplies no predicted tier, tier 1 is proposed for confirmation.
 
+`metronome intake` runs a source command once or on a schedule and mirrors its ranked backlog into a
+workstream's Ready queue. The command owns source access and reports claims held by other instances.
+Unlike add-only `backlog sync`, intake updates Ready items and shelves those missing or claimed elsewhere;
+it never discards work in Plan or later.
+
 ```sh
 go build -o metronome ./cmd/metronome
 ./metronome serve --db metronome.db &
@@ -50,6 +56,7 @@ go build -o metronome ./cmd/metronome
 ./metronome board
 ./metronome workstream create example --execute 0
 ./metronome backlog sync --workstream example source.json
+./metronome intake --workstream example --every 10m -- ./backlog-from-source.sh
 ./metronome workstream set example --execute 2
 ./metronome workstream list
 ./metronome board --workstream example
