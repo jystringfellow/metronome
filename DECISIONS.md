@@ -75,12 +75,12 @@ open.
 - **Failed check results for any other head are refused as stale** and change nothing.
 - Proposed by the agent and accepted by the maintainer on 2026-11-26.
 
-## Agent decision (2026-11-27): current-head checks
+## Decided (2026-11-27): current-head checks
 
 - **Green check results for any other head are also refused as stale.** A new head must be recorded with
   `pr-opened` before recording checks on it, including when checks are entered by hand. Why: a stale green
   result would move the recorded head back and let `ReadyForReview` trust an old commit.
-- Decided by the implementing agent on 2026-11-27, separate from the maintainer's 2026-11-26 decision.
+- Proposed by the implementing agent and accepted by the maintainer on 2026-11-27.
 
 ## Designed, not built: open workstreams and shared work (2026-11-26)
 
