@@ -109,6 +109,31 @@ open.
   approval by merge needs a named merger.
 - Decided by the implementing agent on 2026-11-27, separate from the maintainer's decision.
 
+## Decided (2026-11-27): tier 0 and 1 items are done at their last merge
+
+- Decided by the maintainer on 2026-11-27: items whose confirmed tier is 0 or 1 never take a Release slot or
+  await release. Merging ends Review, and the item is done when its last slice merges, without `release-done`.
+  UAT is required only at tiers 2 and 3; low-risk items had nothing to release but held one of two Release slots,
+  backing up Review. Tiers 2 and 3 keep the existing release path.
+
+## Agent decision (2026-11-27): finishing low-tier items
+
+- The confirmed tier from plan approval is stored as `confirmed_tier` using the existing `plan_approved` event.
+  Only the confirmed tier decides whether Release is needed, because effective tiers are not recorded yet.
+- The last approved slice keeps Review until its own merge, so the wait for merging is counted. Siblings
+  approved earlier free Review as before. Corrected by the implementing agent on 2026-11-27 after live testing:
+  keeping Review until the item's last merge contradicted the maintainer's rule that merging ends Review.
+- New merges of executing low-tier items record `frees_review` in `pr_merged`, so Review is freed even when
+  another slice has not merged. Historical events without that field retain their original meaning, and tier
+  2 and 3 or legacy release-path merges continue to use the original payload.
+- The item stays executing until a new `item_done` event at its last merge frees every slot its slices hold.
+  Existing events are not reinterpreted, so replay preserves historical release state.
+- A low-tier item already releasing or awaiting release in an existing log follows the old path and finishes
+  with `release-done`. If its approval is withdrawn and it returns to executing, it follows the new rule from
+  then on.
+- This decision supersedes the Release slot requirement for tiers 0 and 1 in SPEC.md sections 2.5 and 4 until
+  the maintainer updates the SPEC.
+
 ## Designed, not built: open workstreams and shared work (2026-11-26)
 
 Recorded so the data model leaves room for it. Nothing here is in the proof of concept.
@@ -158,7 +183,8 @@ Recorded so the data model leaves room for it. Nothing here is in the proof of c
   rise. An approver that cannot report a tier is advisory only. (Findings 3 and 6.)
 - **Merging is the last step of Review.** When every PR of an item is approved, the item takes a Release slot and
   its PRs merge. If Release is full, the last approved PR keeps its Review slot, so the wait is counted. UAT is
-  required only at tiers 2 and 3. (Finding 7, except merge order across repositories, which stays Open.)
+  required only at tiers 2 and 3. (Finding 7, except merge order across repositories, which stays Open; for
+  tiers 0 and 1, see the decision of 2026-11-27.)
 - **Default:** a `comment` verdict means not approved, and the PR goes to a human per its tier. (Finding 4.)
 - **Default for the proof of concept:** the backlog is a local file. Metronome reads items from it and writes the
   items it proposes to a separate file. The general backlog contract is still to be written. (Finding 5.)
@@ -269,6 +295,10 @@ Choices made while building step 1 where SPEC.md was silent. Each is easy to cha
 
 Everything section 12 of SPEC.md marks Open or Unverified, plus:
 
+- 2026-11-27: what happens when an approver reports an effective tier of 2 or more on a tier 0 or 1 item.
+  Effective tiers are not recorded yet, so only the confirmed tier decides today.
+- 2026-11-27: whether plan approval should stop overwriting the predicted tier, which SPEC.md section 6 keeps
+  for comparison. The existing board behaviour is preserved for now.
 - 2026-11-27: what a withdrawal should do when a sibling PR of the item has already merged; today the item
   returns to executing and the merged PR stays merged.
 - 2026-11-27: whether the poller should also report merges and closes for queued, running and flagged slices

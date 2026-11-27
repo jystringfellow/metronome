@@ -2,8 +2,10 @@ package flow_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -66,12 +68,22 @@ func (h *harness) backlog(n int) {
 	h.t.Helper()
 	var items []flow.BacklogItem
 	for i := 1; i <= n; i++ {
-		items = append(items, flow.BacklogItem{Ref: fmt.Sprintf("ACME-%d", i), Title: fmt.Sprintf("item %d", i), Owner: "pat", PredictedTier: 1})
+		items = append(items, flow.BacklogItem{Ref: fmt.Sprintf("ACME-%d", i), Title: fmt.Sprintf("item %d", i), Owner: "pat", PredictedTier: 2})
 	}
 	h.ok(h.eng.SyncBacklog(ctx(), "test", "", items))
 }
 
 func (h *harness) approvedItem(itemID string, slices int) {
+	h.t.Helper()
+	h.approveItem(itemID, slices, nil)
+}
+
+func (h *harness) approvedItemAt(itemID string, slices, tier int) {
+	h.t.Helper()
+	h.approveItem(itemID, slices, intp(tier))
+}
+
+func (h *harness) approveItem(itemID string, slices int, tier *int) {
 	h.t.Helper()
 	h.ok(h.eng.StartPlan(ctx(), "test", "", itemID))
 	var specs []flow.SliceSpec
@@ -79,7 +91,7 @@ func (h *harness) approvedItem(itemID string, slices int) {
 		specs = append(specs, flow.SliceSpec{Title: fmt.Sprintf("slice %d", i), Repo: "acme/app", Approvers: []string{"rev"}})
 	}
 	h.ok(h.eng.ProposePlan(ctx(), "test", "", itemID, specs, ""))
-	h.ok(h.eng.ApprovePlan(ctx(), "pat", "", itemID, nil))
+	h.ok(h.eng.ApprovePlan(ctx(), "pat", "", itemID, tier))
 }
 
 func (h *harness) claim(runner string) flow.Claim {
@@ -831,4 +843,413 @@ func TestAMergeIsRefusedWhileTheSliceIsBeingReworked(t *testing.T) {
 	h.ok(h.eng.PRChangesRequested(ctx(), "github", "", c.SliceID, "rev"))
 	_, err := h.eng.PRMerged(ctx(), "github", "", c.SliceID, "pat")
 	wantCode(t, err, flow.CodeConflict)
+}
+
+func TestPlanApprovalStoresTheConfirmedTier(t *testing.T) {
+	h := newHarness(t, nil)
+	h.backlog(1)
+	h.approvedItemAt("I1", 1, 0)
+	if it := h.item("I1"); it.ConfirmedTier != 0 {
+		t.Fatalf("confirmed tier = %d, want 0", it.ConfirmedTier)
+	}
+	h.eng = h.reload()
+	if it := h.item("I1"); it.ConfirmedTier != 0 {
+		t.Fatalf("replayed confirmed tier = %d, want 0", it.ConfirmedTier)
+	}
+}
+
+func (h *harness) wantNoRelease(itemID string, tier int) {
+	h.t.Helper()
+	_, err := h.eng.ReleaseDone(ctx(), "pat", "", itemID)
+	wantCode(h.t, err, flow.CodeConflict)
+	if !strings.Contains(err.Error(), fmt.Sprintf("tier %d", tier)) || !strings.Contains(err.Error(), "last slice merges") {
+		h.t.Fatalf("release-done error = %v", err)
+	}
+}
+
+func (h *harness) wantDone(itemID string) {
+	h.t.Helper()
+	it := h.item(itemID)
+	if it.Status != flow.ItemDone || it.HoldsRelease {
+		h.t.Fatalf("item = %+v, want done", it)
+	}
+	for _, id := range it.Slices {
+		if sl := h.slice(id); sl.Status != flow.SliceMerged || sl.HoldsExecute || sl.HoldsReview {
+			h.t.Fatalf("slice = %+v, want merged with no slots", sl)
+		}
+	}
+}
+
+func TestItemsFinishAtTheGateForTheirConfirmedTier(t *testing.T) {
+	for _, tier := range []int{0, 1, 2, 3} {
+		for _, count := range []int{1, 2} {
+			for _, reverse := range []bool{false, true} {
+				if count == 1 && reverse {
+					continue
+				}
+				t.Run(fmt.Sprintf("tier %d/slices %d/reverse %v", tier, count, reverse), func(t *testing.T) {
+					h := newHarness(t, nil)
+					h.backlog(1)
+					h.approvedItemAt("I1", count, tier)
+					ids := make([]string, 0, count)
+					for index := 0; index < count; index++ {
+						id := h.claimAndApprove()
+						ids = append(ids, id)
+						if index < count-1 {
+							if h.slice(id).HoldsReview {
+								t.Fatal("earlier approval kept Review")
+							}
+							h.wantSlots(0, 0)
+						}
+					}
+					status, review, release := flow.ItemExecuting, 1, 0
+					if tier >= 2 {
+						status, review, release = flow.ItemReleasing, 0, 1
+					} else {
+						h.wantNoRelease("I1", tier)
+					}
+					if it := h.item("I1"); it.Status != status || it.HoldsRelease != (tier >= 2) || it.ConfirmedTier != tier {
+						t.Fatalf("approved item = %+v", it)
+					}
+					h.wantSlots(review, release)
+					if reverse {
+						ids[0], ids[1] = ids[1], ids[0]
+					}
+					for index, id := range ids {
+						result := h.ok(h.eng.PRMerged(ctx(), "github", "", id, ""))
+						if index == count-1 && tier < 2 {
+							if len(result.Events) != 2 || result.Events[1].Type != flow.EvItemDone {
+								t.Fatalf("last merge events = %+v", result.Events)
+							}
+						} else {
+							if len(result.Events) != 1 || h.item("I1").Status != status {
+								t.Fatalf("merge changed item prematurely: %+v", result.Events)
+							}
+							if tier < 2 && reverse {
+								review = 0
+							}
+							h.wantSlots(review, release)
+						}
+						if repeated := h.ok(h.eng.PRMerged(ctx(), "github", "", id, "")); len(repeated.Events) != 0 {
+							t.Fatalf("repeated merge = %+v", repeated.Events)
+						}
+					}
+					if tier >= 2 {
+						h.ok(h.eng.ReleaseDone(ctx(), "pat", "", "I1"))
+					} else {
+						h.wantNoRelease("I1", tier)
+					}
+					h.wantDone("I1")
+					h.wantSlots(0, 0)
+					if h.usage().Execute != 0 {
+						t.Fatalf("usage = %+v", h.usage())
+					}
+					before, usage := h.item("I1"), h.usage()
+					var beforeSlices []flow.Slice
+					for _, id := range ids {
+						beforeSlices = append(beforeSlices, h.slice(id))
+					}
+					h.eng = h.reload()
+					if !reflect.DeepEqual(before, h.item("I1")) || !reflect.DeepEqual(usage, h.usage()) {
+						t.Fatal("replay changed item or usage")
+					}
+					for index, id := range ids {
+						if !reflect.DeepEqual(beforeSlices[index], h.slice(id)) {
+							t.Fatalf("replay changed slice %s", id)
+						}
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestLowTierNonFinalMergeFreesReview(t *testing.T) {
+	for _, tier := range []int{0, 1} {
+		for _, status := range []flow.SliceStatus{flow.SliceApproved, flow.SliceInReview, flow.SlicePROpen} {
+			t.Run(fmt.Sprintf("tier %d/%s", tier, status), func(t *testing.T) {
+				h := newHarness(t, func(c *flow.Config) { c.Limits.Review = 1 })
+				h.backlog(2)
+				h.approvedItemAt("I1", 2, tier)
+				h.approvedItemAt("I2", 1, tier)
+				first := h.claimAndApprove()
+				claim := h.claim("laptop")
+				second := claim.SliceID
+				if status == flow.SlicePROpen {
+					h.ok(h.eng.Submit(ctx(), "runner", "", claim.RunID, "metronome/"+second))
+					h.ok(h.eng.PROpened(ctx(), "github", "", second, "acme/app", 11, "sha-"+second))
+				} else {
+					h.toReview(second)
+					if status == flow.SliceApproved {
+						h.ok(h.eng.PRApproved(ctx(), "github", "", second, "sha-"+second, "rev"))
+					}
+				}
+				h.wantSlots(1, 0)
+				_, err := h.eng.Claim(ctx(), "runner", "", "probe", "I2.1")
+				wantCode(t, err, flow.CodeNoCapacity)
+				h.ok(h.eng.PRMerged(ctx(), "github", "", second, "rev"))
+				for _, replay := range []bool{false, true} {
+					if replay {
+						h.eng = h.reload()
+					}
+					if sl := h.slice(second); sl.Status != flow.SliceMerged || sl.HoldsReview || sl.HoldsExecute {
+						t.Fatalf("merged slice holds slots (replay %v): %+v", replay, sl)
+					}
+					if it := h.item("I1"); it.Status != flow.ItemExecuting || it.HoldsRelease || h.slice(first).Status != flow.SliceApproved {
+						t.Fatalf("item finished early (replay %v): %+v", replay, it)
+					}
+					h.wantSlots(0, 0)
+				}
+				h.ok(h.eng.Claim(ctx(), "runner", "", "probe", "I2.1"))
+				h.ok(h.eng.PRMerged(ctx(), "github", "", first, "rev"))
+				h.wantDone("I1")
+				h.wantSlots(1, 0)
+			})
+		}
+	}
+}
+
+func TestHistoricalMergeWithoutReviewReleaseReplaysUnchanged(t *testing.T) {
+	h := newHarness(t, nil)
+	h.backlog(1)
+	h.approvedItemAt("I1", 2, 1)
+	first, second := h.claimAndApprove(), h.claimAndApprove()
+	if _, err := h.store.Append(ctx(), []flow.Event{{ID: "legacy-merge", Type: flow.EvPRMerged, At: h.clock.Now(), Actor: "github", Data: json.RawMessage(fmt.Sprintf(`{"slice_id":%q}`, second))}}); err != nil {
+		t.Fatal(err)
+	}
+	h.eng = h.reload()
+	if sl := h.slice(second); sl.Status != flow.SliceMerged || !sl.HoldsReview {
+		t.Fatalf("historical merge changed meaning: %+v", sl)
+	}
+	h.wantSlots(1, 0)
+	h.ok(h.eng.PRMerged(ctx(), "github", "", first, "rev"))
+	h.wantDone("I1")
+	h.wantSlots(0, 0)
+}
+
+func TestMergeBeforeApprovalFinishesAtTheGateForItsTier(t *testing.T) {
+	for _, tier := range []int{0, 1, 2} {
+		for _, count := range []int{1, 2} {
+			for _, inReview := range []bool{false, true} {
+				t.Run(fmt.Sprintf("tier %d/slices %d/in review %v", tier, count, inReview), func(t *testing.T) {
+					h := newHarness(t, nil)
+					h.backlog(1)
+					h.approvedItemAt("I1", count, tier)
+					if count == 2 {
+						first := h.claimAndApprove()
+						h.ok(h.eng.PRMerged(ctx(), "github", "", first, ""))
+						h.wantSlots(0, 0)
+					}
+					claim := h.claim("laptop")
+					id := claim.SliceID
+					var wantEvents []string
+					if inReview {
+						h.toReview(id)
+					} else {
+						h.ok(h.eng.Submit(ctx(), "runner", "", claim.RunID, "metronome/"+id))
+						h.ok(h.eng.PROpened(ctx(), "github", "", id, "acme/app", 10, "sha-x"))
+						wantEvents = append(wantEvents, flow.EvPRReadyForReview)
+					}
+					_, err := h.eng.PRMerged(ctx(), "github", "", id, "")
+					wantCode(t, err, flow.CodeInvalid)
+					wantEvents = append(wantEvents, flow.EvPRApproved)
+					if tier >= 2 {
+						wantEvents = append(wantEvents, flow.EvReleaseSlotTaken)
+					}
+					wantEvents = append(wantEvents, flow.EvPRMerged)
+					if tier < 2 {
+						wantEvents = append(wantEvents, flow.EvItemDone)
+					}
+					result := h.ok(h.eng.PRMerged(ctx(), "github", "", id, "pat"))
+					var gotEvents []string
+					for _, event := range result.Events {
+						gotEvents = append(gotEvents, event.Type)
+						if event.Type == flow.EvPRApproved {
+							var approval struct {
+								By string `json:"by"`
+							}
+							if err := json.Unmarshal(event.Data, &approval); err != nil || approval.By != "pat" {
+								t.Fatalf("approval = %s (%v)", event.Data, err)
+							}
+						}
+					}
+					if !reflect.DeepEqual(gotEvents, wantEvents) {
+						t.Fatalf("events = %v, want %v", gotEvents, wantEvents)
+					}
+					if sl := h.slice(id); sl.PR.ApprovedSHA != sl.PR.HeadSHA {
+						t.Fatalf("PR = %+v", sl.PR)
+					}
+					if tier >= 2 {
+						h.wantSlots(0, 1)
+						if h.item("I1").Status != flow.ItemReleasing {
+							t.Fatal("item must wait for release")
+						}
+						h.ok(h.eng.ReleaseDone(ctx(), "pat", "", "I1"))
+					}
+					h.wantDone("I1")
+					h.wantSlots(0, 0)
+					if h.usage().Execute != 0 {
+						t.Fatalf("usage = %+v", h.usage())
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestALowTierItemNeverTakesAReleaseSlotWhenReleaseIsFull(t *testing.T) {
+	h := newHarness(t, func(c *flow.Config) { c.Limits.Release = 1 })
+	h.backlog(2)
+	h.approvedItem("I1", 1)
+	h.approvedItemAt("I2", 1, 1)
+	first := h.claimAndApprove()
+	second := h.claimAndApprove()
+	if it := h.item("I2"); it.Status != flow.ItemExecuting || it.HoldsRelease {
+		t.Fatalf("low-tier item = %+v", it)
+	}
+	h.wantSlots(1, 1)
+	h.ok(h.eng.PRMerged(ctx(), "github", "", second, ""))
+	h.wantDone("I2")
+	h.wantSlots(0, 1)
+	h.ok(h.eng.PRMerged(ctx(), "github", "", first, ""))
+	h.ok(h.eng.ReleaseDone(ctx(), "pat", "", "I1"))
+	h.wantDone("I1")
+	h.wantSlots(0, 0)
+}
+
+func TestWithdrawingAnApprovalOfALowTierItem(t *testing.T) {
+	for _, tier := range []int{0, 1} {
+		for _, siblingMerged := range []bool{false, true} {
+			for _, mergeBeforeApproval := range []bool{false, true} {
+				t.Run(fmt.Sprintf("tier %d/merged sibling %v/merge before approval %v", tier, siblingMerged, mergeBeforeApproval), func(t *testing.T) {
+					h := newHarness(t, nil)
+					h.backlog(1)
+					h.approvedItemAt("I1", 2, tier)
+					first, second := h.claimAndApprove(), h.claimAndApprove()
+					h.wantSlots(1, 0)
+					if siblingMerged {
+						h.ok(h.eng.PRMerged(ctx(), "github", "", second, ""))
+						h.wantSlots(0, 0)
+					}
+					h.newHead(first, "bbb")
+					if sl := h.slice(first); sl.Status != flow.SlicePROpen || !sl.HoldsReview || h.slice(second).HoldsReview {
+						t.Fatalf("withdrawal did not move Review: first = %+v, second = %+v", sl, h.slice(second))
+					}
+					if it := h.item("I1"); it.Status != flow.ItemExecuting || it.HoldsRelease {
+						t.Fatalf("item = %+v", it)
+					}
+					h.wantSlots(1, 0)
+					if !mergeBeforeApproval {
+						h.reapprove(first, "bbb")
+						h.wantSlots(1, 0)
+					}
+					h.ok(h.eng.PRMerged(ctx(), "github", "", first, "pat"))
+					if !siblingMerged {
+						if h.item("I1").Status != flow.ItemExecuting {
+							t.Fatal("item finished before its last merge")
+						}
+						h.ok(h.eng.PRMerged(ctx(), "github", "", second, ""))
+					}
+					if sl := h.slice(first); sl.PR.ApprovedSHA != "bbb" {
+						t.Fatalf("PR = %+v", sl.PR)
+					}
+					h.wantDone("I1")
+					h.wantSlots(0, 0)
+				})
+			}
+		}
+	}
+}
+
+func (h *harness) appendLegacyLowTierItem(number int, releaseEvent string) {
+	h.t.Helper()
+	itemID := fmt.Sprintf("I%d", number)
+	sliceID := itemID + ".1"
+	runID := fmt.Sprintf("R%d", number)
+	item := fmt.Sprintf(`{"item_id":%q}`, itemID)
+	slice := fmt.Sprintf(`{"slice_id":%q}`, sliceID)
+	payloads := []struct {
+		typ, data string
+	}{
+		{flow.EvItemAdded, fmt.Sprintf(`{"item_id":%q,"ref":"ACME-%d","title":"example","owner":"pat","predicted_tier":1,"rank":%d}`, itemID, number, number)},
+		{flow.EvPlanStarted, item},
+		{flow.EvPlanProposed, fmt.Sprintf(`{"item_id":%q,"slices":[{"title":"example","repo":"acme/app","approvers":["rev"]}],"approver":"pat"}`, itemID)},
+		{flow.EvPlanApproved, fmt.Sprintf(`{"item_id":%q,"confirmed_tier":1,"slice_ids":[%q]}`, itemID, sliceID)},
+		{flow.EvSliceClaimed, fmt.Sprintf(`{"run_id":%q,"slice_id":%q,"runner_id":"laptop","lease_until":%q,"takes_execute":true,"takes_review":true}`, runID, sliceID, h.clock.Now().Add(time.Minute).Format(time.RFC3339))},
+		{flow.EvRunClosed, fmt.Sprintf(`{"run_id":%q,"reason":"submitted","branch":"metronome/%s"}`, runID, sliceID)},
+		{flow.EvPROpened, fmt.Sprintf(`{"slice_id":%q,"repo":"acme/app","number":%d,"head_sha":"abc"}`, sliceID, number)},
+		{flow.EvChecksCompleted, fmt.Sprintf(`{"slice_id":%q,"head_sha":"abc","success":true}`, sliceID)},
+		{flow.EvPRReadyForReview, slice},
+		{flow.EvPRApproved, fmt.Sprintf(`{"slice_id":%q,"head_sha":"abc","by":"rev","keeps_review":true}`, sliceID)},
+		{releaseEvent, item},
+	}
+	var events []flow.Event
+	for index, payload := range payloads {
+		events = append(events, flow.Event{ID: fmt.Sprintf("legacy-%s-%d", itemID, index), Type: payload.typ, At: h.clock.Now(), Actor: "pat", Data: json.RawMessage(payload.data)})
+	}
+	if _, err := h.store.Append(ctx(), events); err != nil {
+		h.t.Fatal(err)
+	}
+}
+
+func TestALegacyLowTierReleasingItemStillFinishesWithReleaseDone(t *testing.T) {
+	h := newHarness(t, nil)
+	h.appendLegacyLowTierItem(1, flow.EvReleaseSlotTaken)
+	h.eng = h.reload()
+	if it := h.item("I1"); it.ConfirmedTier != 1 || it.Status != flow.ItemReleasing || !it.HoldsRelease {
+		t.Fatalf("replayed item = %+v", it)
+	}
+	h.wantSlots(0, 1)
+	result := h.ok(h.eng.PRMerged(ctx(), "github", "", "I1.1", ""))
+	if len(result.Events) != 1 || result.Events[0].Type != flow.EvPRMerged || h.item("I1").Status != flow.ItemReleasing {
+		t.Fatalf("legacy merge = %+v", result.Events)
+	}
+	h.wantSlots(0, 1)
+	h.ok(h.eng.ReleaseDone(ctx(), "pat", "", "I1"))
+	h.wantDone("I1")
+	h.wantSlots(0, 0)
+}
+
+func TestALegacyLowTierItemAwaitingReleaseStillFinishesWithReleaseDone(t *testing.T) {
+	h := newHarness(t, func(c *flow.Config) { c.Limits.Release = 1 })
+	h.appendLegacyLowTierItem(1, flow.EvReleaseSlotTaken)
+	h.appendLegacyLowTierItem(2, flow.EvItemAwaitsRelease)
+	h.eng = h.reload()
+	if it := h.item("I2"); it.Status != flow.ItemAwaitingRelease || it.HoldsRelease || it.ConfirmedTier != 1 {
+		t.Fatalf("replayed awaiting item = %+v", it)
+	}
+	h.wantSlots(1, 1)
+	_, err := h.eng.ReleaseDone(ctx(), "pat", "", "I2")
+	wantCode(t, err, flow.CodeConflict)
+	if !strings.Contains(err.Error(), "awaiting_release, not releasing") {
+		t.Fatalf("legacy release error = %v", err)
+	}
+	h.ok(h.eng.PRMerged(ctx(), "github", "", "I2.1", ""))
+	if h.item("I2").Status != flow.ItemAwaitingRelease || !h.slice("I2.1").HoldsReview {
+		t.Fatal("legacy merge changed the waiting release state")
+	}
+	h.wantSlots(1, 1)
+	h.ok(h.eng.PRMerged(ctx(), "github", "", "I1.1", ""))
+	h.ok(h.eng.ReleaseDone(ctx(), "pat", "", "I1"))
+	h.wantDone("I1")
+	if it := h.item("I2"); it.Status != flow.ItemReleasing || !it.HoldsRelease {
+		t.Fatalf("awaiting item did not receive Release: %+v", it)
+	}
+	h.wantSlots(0, 1)
+	h.ok(h.eng.ReleaseDone(ctx(), "pat", "", "I2"))
+	h.wantDone("I2")
+	h.wantSlots(0, 0)
+}
+
+func TestALegacyLowTierItemUsesTheNewRuleAfterWithdrawal(t *testing.T) {
+	h := newHarness(t, nil)
+	h.appendLegacyLowTierItem(1, flow.EvReleaseSlotTaken)
+	h.eng = h.reload()
+	h.newHead("I1.1", "bbb")
+	h.wantSlots(1, 0)
+	h.reapprove("I1.1", "bbb")
+	h.wantSlots(1, 0)
+	h.ok(h.eng.PRMerged(ctx(), "github", "", "I1.1", ""))
+	h.wantDone("I1")
+	h.wantSlots(0, 0)
 }

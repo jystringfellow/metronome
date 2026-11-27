@@ -56,6 +56,7 @@ type Item struct {
 	Owner         string      `json:"owner"`
 	Value         float64     `json:"value"`
 	PredictedTier int         `json:"predicted_tier"`
+	ConfirmedTier int         `json:"confirmed_tier"`
 	Rank          int         `json:"rank"`
 	Status        ItemStatus  `json:"status"`
 	HoldsPlan     bool        `json:"holds_plan"`
@@ -65,6 +66,10 @@ type Item struct {
 	Approver      string      `json:"approver,omitempty"`
 	Slices        []string    `json:"slices"`
 	AddedAt       time.Time   `json:"added_at"`
+}
+
+func (it *Item) needsRelease() bool {
+	return it.ConfirmedTier >= 2
 }
 
 type SliceSpec struct {
