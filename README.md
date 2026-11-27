@@ -8,6 +8,7 @@ Metronome is a design and an early proof of concept.
 
 - [SPEC.md](SPEC.md): the full design.
 - [DECISIONS.md](DECISIONS.md): what has been decided, what the design review found, and what is still open.
+- [docs/backlog.md](docs/backlog.md): the backlog JSON contract.
 
 ## What runs today
 
@@ -26,11 +27,14 @@ workstreams, and the board shows a section for each workstream.
 A slice may list `after`, the 1-based positions of slices of the same item that must merge first.
 Until they do, claims skip it, and `board` shows what it waits on.
 
+Backlog items may carry pre-planned slices. `plan start` proposes them automatically and asks the item's
+owner to approve. If the backlog supplies no predicted tier, tier 1 is proposed for confirmation.
+
 ```sh
 go build -o metronome ./cmd/metronome
 ./metronome serve --db metronome.db &
 
-./metronome backlog sync backlog.json        # {"items":[{"ref":"ACME-1","title":"…","owner":"pat","predicted_tier":1}]}
+./metronome backlog sync backlog.json        # {"items":[{"ref":"ACME-1","title":"…","owner":"pat"}]} (optional predicted_tier and slices)
 ./metronome plan start
 ./metronome plan propose I1 --slices slices.json   # [{"title":"…","repo":"acme/app","approvers":["rev"]},{"title":"…","repo":"acme/app","after":[1]}]
 ./metronome --as pat plan approve I1

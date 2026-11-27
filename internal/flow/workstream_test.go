@@ -17,7 +17,7 @@ func (h *harness) backlogIn(ws string, refs ...string) {
 	h.t.Helper()
 	var items []flow.BacklogItem
 	for _, ref := range refs {
-		items = append(items, flow.BacklogItem{Ref: ref, Title: ref, Owner: "pat", PredictedTier: 2})
+		items = append(items, flow.BacklogItem{Ref: ref, Title: ref, Owner: "pat", PredictedTier: intp(2)})
 	}
 	h.ok(h.eng.SyncBacklog(ctx(), "pat", "", ws, items))
 }

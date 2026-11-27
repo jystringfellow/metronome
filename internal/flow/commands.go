@@ -11,12 +11,13 @@ import (
 )
 
 type BacklogItem struct {
-	Ref           string  `json:"ref"`
-	Title         string  `json:"title"`
-	Intent        string  `json:"intent"`
-	Owner         string  `json:"owner"`
-	Value         float64 `json:"value"`
-	PredictedTier int     `json:"predicted_tier"`
+	Ref           string      `json:"ref"`
+	Title         string      `json:"title"`
+	Intent        string      `json:"intent"`
+	Owner         string      `json:"owner"`
+	Value         float64     `json:"value"`
+	PredictedTier *int        `json:"predicted_tier,omitempty"`
+	Slices        []SliceSpec `json:"slices,omitempty"`
 }
 
 type workstreamLimits struct {
@@ -84,8 +85,13 @@ func (e *Engine) SyncBacklog(ctx context.Context, actor, requestID, workstream s
 			if bi.Ref == "" || bi.Title == "" || bi.Owner == "" {
 				return fail(CodeInvalid, "backlog item %d needs ref, title and owner", i+1)
 			}
-			if bi.PredictedTier < 0 || bi.PredictedTier > 3 {
-				return fail(CodeInvalid, "backlog item %q has tier %d, want 0 to 3", bi.Ref, bi.PredictedTier)
+			if bi.PredictedTier != nil && (*bi.PredictedTier < 0 || *bi.PredictedTier > 3) {
+				return fail(CodeInvalid, "backlog item %q has tier %d, want 0 to 3", bi.Ref, *bi.PredictedTier)
+			}
+			if len(bi.Slices) > 0 {
+				if err := validateSpecs(bi.Slices); err != nil {
+					return fail(CodeInvalid, "backlog item %q: %s", bi.Ref, err.(*Error).Message)
+				}
 			}
 		}
 		ready := d.s.StageUsage(workstream).Ready
@@ -100,10 +106,15 @@ func (e *Engine) SyncBacklog(ctx context.Context, actor, requestID, workstream s
 				continue
 			}
 			known[bi.Ref] = true
+			tier := 1
+			if bi.PredictedTier != nil {
+				tier = *bi.PredictedTier
+			}
 			d.emit(EvItemAdded, itemAdded{
 				Workstream: workstream,
 				ItemID:     d.nextItemID(), Ref: bi.Ref, Title: bi.Title, Intent: bi.Intent, Owner: bi.Owner,
-				Value: bi.Value, PredictedTier: bi.PredictedTier, Rank: i + 1,
+				Value: bi.Value, PredictedTier: tier, Rank: i + 1,
+				Slices: bi.Slices, TierDefaulted: bi.PredictedTier == nil,
 			})
 			ready++
 		}
@@ -161,6 +172,9 @@ func (e *Engine) StartPlan(ctx context.Context, actor, requestID, workstream, it
 			}
 		}
 		d.emit(EvPlanStarted, itemRef{ItemID: it.ID})
+		if len(it.PlannedSlices) > 0 {
+			d.proposePlan(it, it.PlannedSlices, it.Owner, true)
+		}
 		return nil
 	})
 }
@@ -171,26 +185,40 @@ func (e *Engine) ProposePlan(ctx context.Context, actor, requestID, itemID strin
 		if err != nil {
 			return err
 		}
-		if len(slices) == 0 {
-			return fail(CodeInvalid, "a plan needs at least one slice")
-		}
-		for i, sl := range slices {
-			if sl.Title == "" || sl.Repo == "" {
-				return fail(CodeInvalid, "slice %d needs a title and a repo", i+1)
-			}
-		}
-		if err := validateAfter(slices); err != nil {
+		if err := validateSpecs(slices); err != nil {
 			return err
 		}
 		if approver == "" {
 			approver = it.Owner
 		}
-		d.closeOpenFlags(Subject{Kind: SubjectItem, ID: it.ID}, AskApprove, "superseded by a new proposal")
-		d.emit(EvPlanProposed, planProposed{ItemID: it.ID, Slices: slices, Approver: approver})
-		d.raiseFlag(Subject{Kind: SubjectItem, ID: it.ID}, AskApprove, approver,
-			fmt.Sprintf("Approve the plan for %s (%d slices) and confirm tier %d?", it.Title, len(slices), it.PredictedTier))
+		d.proposePlan(it, slices, approver, false)
 		return nil
 	})
+}
+
+func validateSpecs(slices []SliceSpec) error {
+	if len(slices) == 0 {
+		return fail(CodeInvalid, "a plan needs at least one slice")
+	}
+	for i, sl := range slices {
+		if sl.Title == "" || sl.Repo == "" {
+			return fail(CodeInvalid, "slice %d needs a title and a repo", i+1)
+		}
+	}
+	return validateAfter(slices)
+}
+
+func (d *decider) proposePlan(it *Item, slices []SliceSpec, approver string, fromBacklog bool) {
+	d.closeOpenFlags(Subject{Kind: SubjectItem, ID: it.ID}, AskApprove, "superseded by a new proposal")
+	d.emit(EvPlanProposed, planProposed{ItemID: it.ID, Slices: slices, Approver: approver})
+	question := fmt.Sprintf("Approve the plan for %s (%d slices) and confirm tier %d?", it.Title, len(slices), it.PredictedTier)
+	if it.TierDefaulted {
+		question += " The backlog gave no tier, so tier 1 is the default."
+	}
+	if fromBacklog {
+		question += " The slices came from the backlog."
+	}
+	d.raiseFlag(Subject{Kind: SubjectItem, ID: it.ID}, AskApprove, approver, question)
 }
 
 func joinedNames(names []string) string {

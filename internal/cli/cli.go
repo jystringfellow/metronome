@@ -42,7 +42,9 @@ Workstreams:
 
 Backlog and plan:
   backlog sync [--workstream NAME] FILE  add ranked items (default workstream if omitted)
+                         items may carry "slices" (as plan propose) and an optional "predicted_tier" (default 1); see docs/backlog.md
   plan start [--workstream NAME] [ITEM]  pull the top ready item with capacity
+                         an item with backlog slices is proposed and its owner asked to approve
   plan propose ITEM --slices FILE [--approver WHO]
                          a slice may list "after": [N] positions that merge first
   plan approve ITEM [--tier N]

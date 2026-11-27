@@ -53,15 +53,17 @@ const (
 )
 
 type itemAdded struct {
-	Workstream    string  `json:"workstream,omitempty"`
-	ItemID        string  `json:"item_id"`
-	Ref           string  `json:"ref"`
-	Title         string  `json:"title"`
-	Intent        string  `json:"intent"`
-	Owner         string  `json:"owner"`
-	Value         float64 `json:"value"`
-	PredictedTier int     `json:"predicted_tier"`
-	Rank          int     `json:"rank"`
+	Workstream    string      `json:"workstream,omitempty"`
+	ItemID        string      `json:"item_id"`
+	Ref           string      `json:"ref"`
+	Title         string      `json:"title"`
+	Intent        string      `json:"intent"`
+	Owner         string      `json:"owner"`
+	Value         float64     `json:"value"`
+	PredictedTier int         `json:"predicted_tier"`
+	Rank          int         `json:"rank"`
+	Slices        []SliceSpec `json:"slices,omitempty"`
+	TierDefaulted bool        `json:"tier_defaulted,omitempty"`
 }
 
 type itemRef struct {
@@ -205,6 +207,7 @@ func (s *State) apply(e Event) error {
 			Workstream: p.Workstream,
 			ID:         p.ItemID, Ref: p.Ref, Title: p.Title, Intent: p.Intent, Owner: p.Owner,
 			Value: p.Value, PredictedTier: p.PredictedTier, Rank: p.Rank,
+			PlannedSlices: p.Slices, TierDefaulted: p.TierDefaulted,
 			Status: ItemReady, AddedAt: e.At, Slices: []string{},
 		}
 	case EvPlanStarted:

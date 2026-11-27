@@ -68,7 +68,7 @@ func (h *harness) backlog(n int) {
 	h.t.Helper()
 	var items []flow.BacklogItem
 	for i := 1; i <= n; i++ {
-		items = append(items, flow.BacklogItem{Ref: fmt.Sprintf("ACME-%d", i), Title: fmt.Sprintf("item %d", i), Owner: "pat", PredictedTier: 2})
+		items = append(items, flow.BacklogItem{Ref: fmt.Sprintf("ACME-%d", i), Title: fmt.Sprintf("item %d", i), Owner: "pat", PredictedTier: intp(2)})
 	}
 	h.ok(h.eng.SyncBacklog(ctx(), "test", "", "", items))
 }

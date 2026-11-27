@@ -52,9 +52,11 @@ func must(t *testing.T, _ flow.Result, err error) {
 	}
 }
 
+func intp(tier int) *int { return &tier }
+
 func submittedSlice(t *testing.T, eng *flow.Engine) {
 	ctx := context.Background()
-	r, err := eng.SyncBacklog(ctx, "pat", "", "", []flow.BacklogItem{{Ref: "ACME-1", Title: "Add export", Owner: "pat", PredictedTier: 2}})
+	r, err := eng.SyncBacklog(ctx, "pat", "", "", []flow.BacklogItem{{Ref: "ACME-1", Title: "Add export", Owner: "pat", PredictedTier: intp(2)}})
 	must(t, r, err)
 	r, err = eng.StartPlan(ctx, "agent", "", "", "")
 	must(t, r, err)

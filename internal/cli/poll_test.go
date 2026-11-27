@@ -30,7 +30,7 @@ func (e *env) poll(prs branchPRs, args ...string) (string, int) {
 
 func TestGitHubPollMovesASliceThroughReviewFromTheCommandLine(t *testing.T) {
 	e := newEnv(t)
-	backlog := e.file("backlog.json", api.BacklogRequest{Items: []flow.BacklogItem{{Ref: "ACME-1", Title: "Add export", Owner: "pat", PredictedTier: 1}}})
+	backlog := e.file("backlog.json", api.BacklogRequest{Items: []flow.BacklogItem{{Ref: "ACME-1", Title: "Add export", Owner: "pat", PredictedTier: intp(1)}}})
 	e.ok("pat", "backlog", "sync", backlog)
 	e.ok("agent", "plan", "start")
 	slices := e.file("slices.json", []flow.SliceSpec{{Title: "API endpoint", Repo: "acme/app", Approvers: []string{"rev"}}})
