@@ -289,9 +289,11 @@ func (s *State) apply(e Event) error {
 			return errUnknown("flag", p.FlagID)
 		}
 		f.Closed, f.Outcome, f.Answer = true, "resolved", p.Answer
+		f.AnsweredBy, f.AnsweredAt = e.Actor, e.At
 		if f.Subject.Kind == SubjectSlice {
 			if sl := s.Slices[f.Subject.ID]; sl != nil && sl.Status == SliceFlagged && len(s.openFlagsFor(f.Subject)) == 0 {
 				sl.Status, sl.StalledAt = SliceStalled, e.At
+				sl.Resume = ResumeAnswered
 			}
 		}
 	case EvFlagTimedOut:
@@ -313,7 +315,8 @@ func (s *State) apply(e Event) error {
 		if sl == nil {
 			return errUnknown("slice", p.SliceID)
 		}
-		s.Runs[p.RunID] = &Run{ID: p.RunID, SliceID: p.SliceID, RunnerID: p.RunnerID, StartedAt: e.At, LeaseUntil: p.LeaseUntil}
+		s.Runs[p.RunID] = &Run{ID: p.RunID, SliceID: p.SliceID, RunnerID: p.RunnerID, StartedAt: e.At, LeaseUntil: p.LeaseUntil, History: s.sliceHistory(sl)}
+		sl.LastRunID = p.RunID
 		sl.Status, sl.RunID, sl.Front, sl.StalledAt = SliceRunning, p.RunID, false, time.Time{}
 		sl.Version++
 		sl.HoldsExecute = sl.HoldsExecute || p.TakesExecute
@@ -346,10 +349,13 @@ func (s *State) apply(e Event) error {
 			sl.Status = SliceFlagged
 		case CloseSubmitted:
 			sl.Status, sl.Branch, sl.Rework = SliceSubmitted, p.Branch, false
+			sl.Resume, sl.ReworkReason, sl.FailedHead, sl.ChangesRequestedBy = "", "", "", ""
 		case CloseReleased:
 			sl.Status, sl.StalledAt = SliceStalled, e.At
+			sl.Resume = ResumeDropped
 		case CloseLeaseExpired:
 			sl.Status, sl.StalledAt = SliceStalled, r.LeaseUntil
+			sl.Resume = ResumeLeaseExpired
 		default:
 			return fmt.Errorf("unknown close reason %q", p.Reason)
 		}
@@ -357,6 +363,9 @@ func (s *State) apply(e Event) error {
 		sl, err := s.sliceFor(e.Data)
 		if err != nil {
 			return err
+		}
+		if sl.Status == SliceFlagged {
+			sl.Resume = ResumeAskTimedOut
 		}
 		sl.Status, sl.HoldsExecute, sl.HoldsReview, sl.Front, sl.StalledAt = SliceQueued, false, false, true, time.Time{}
 		sl.Version++
@@ -387,6 +396,8 @@ func (s *State) apply(e Event) error {
 		sl.Version++
 		if !p.Success && (sl.Status == SlicePROpen || sl.Status == SliceSubmitted || sl.Status == SliceInReview) {
 			sl.Status, sl.Rework, sl.StalledAt = SliceStalled, true, e.At
+			sl.Resume, sl.ReworkReason = ResumeChecksFailed, ResumeChecksFailed
+			sl.FailedHead, sl.ChangesRequestedBy = p.HeadSHA, ""
 		}
 	case EvPRReadyForReview:
 		sl, err := s.sliceFor(e.Data)
@@ -436,6 +447,8 @@ func (s *State) apply(e Event) error {
 			return errUnknown("slice", p.SliceID)
 		}
 		sl.Status, sl.Rework = SliceQueued, true
+		sl.Resume, sl.ReworkReason = ResumeChangesRequested, ResumeChangesRequested
+		sl.ChangesRequestedBy, sl.FailedHead = p.By, ""
 		sl.Version++
 	case EvItemAwaitsRelease:
 		it, err := s.itemFor(e.Data)

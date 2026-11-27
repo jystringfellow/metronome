@@ -8,6 +8,7 @@ Metronome is a design and an early proof of concept.
 
 - [SPEC.md](SPEC.md): the full design.
 - [DECISIONS.md](DECISIONS.md): what has been decided, what the design review found, and what is still open.
+- [docs/runners.md](docs/runners.md): how agents take work and hand it back.
 - [docs/backlog.md](docs/backlog.md): the backlog JSON contract.
 
 ## What runs today
@@ -34,17 +35,17 @@ owner to approve. If the backlog supplies no predicted tier, tier 1 is proposed 
 go build -o metronome ./cmd/metronome
 ./metronome serve --db metronome.db &
 
-./metronome backlog sync backlog.json        # {"items":[{"ref":"ACME-1","title":"…","owner":"pat"}]} (optional predicted_tier and slices)
+./metronome backlog sync backlog.json        # {"items":[{"ref":"ACME-1","title":"…","intent":"…","owner":"pat"}]} (optional predicted_tier and slices; see docs/backlog.md)
 ./metronome plan start
-./metronome plan propose I1 --slices slices.json   # [{"title":"…","repo":"acme/app","approvers":["rev"]},{"title":"…","repo":"acme/app","after":[1]}]
+./metronome plan propose I1 --slices slices.json   # [{"title":"…","repo":"acme/app","criteria":["…"],"approvers":["rev"]},{"title":"…","repo":"acme/app","after":[1]}]
 ./metronome --as pat plan approve I1
 
-./metronome next --runner laptop             # claims a slice: run R1, lease 15 minutes
+./metronome next --runner laptop             # claims a slice and prints its brief: run R1, lease 15 minutes
 ./metronome report R1 --note "tests written" # renews the lease
 ./metronome ask --run R1 --type answer --question "CSV or JSON?"
 ./metronome inbox pat
 ./metronome answer F2 "CSV"
-./metronome next --runner laptop             # resumes the answered slice: run R2
+./metronome next --runner laptop --json      # resumes the answered slice as JSON: run R2
 ./metronome submit R2 --branch metronome/I1.1
 ./metronome --as github github poll --every 1m  # follows the PR on that branch until it merges
 ./metronome board
@@ -56,6 +57,23 @@ go build -o metronome ./cmd/metronome
 ```
 
 Run `metronome help` for every command.
+
+While `serve` runs, open <http://127.0.0.1:7340/> for a read-only board showing limits, items, slices, open
+runs with lease time left, open asks and the latest events. It refreshes every few seconds from the same JSON
+API, ships inside the binary and changes nothing. The page and API are unauthenticated; keep the service on
+loopback.
+
+To wrap a coding agent and keep its lease alive until it finishes:
+
+```sh
+./metronome run --runner laptop -- sh -c 'claude -p "Do the work in $METRONOME_BRIEF" && git branch --show-current > "$METRONOME_BRANCH_FILE"'
+```
+
+The command receives the claim and service details in `METRONOME_*` environment variables (see
+[DECISIONS.md](DECISIONS.md)). The brief file contains the same JSON as `next --json`. By default the wrapper
+renews the lease every five minutes (`--every` overrides this), submits on success with a branch in
+`METRONOME_BRANCH_FILE`, and otherwise drops the run, keeping the slice's slots. A command that already closed
+its run is left alone. Metronome prints its own messages to stderr.
 
 ## Developing
 
