@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -21,6 +22,18 @@ func (ht handlerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	rec := httptest.NewRecorder()
 	ht.h.ServeHTTP(rec, r)
 	return rec.Result(), nil
+}
+
+type countingTransport struct {
+	handlerTransport
+	posts int
+}
+
+func (ct *countingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	if r.Method == http.MethodPost {
+		ct.posts++
+	}
+	return ct.handlerTransport.RoundTrip(r)
 }
 
 type fakeGitHub map[string]*github.Snapshot
@@ -131,6 +144,113 @@ func TestPollingCarriesASliceFromSubmitToMerge(t *testing.T) {
 	}
 }
 
+func pollingApprovedSlice(t *testing.T) (*flow.Engine, *api.Client, *github.Snapshot, func() github.PollResult) {
+	t.Helper()
+	eng, err := flow.NewEngine(context.Background(), flow.DefaultConfig(), store.NewMemory(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	submittedSlice(t, eng)
+	snap := &github.Snapshot{
+		Repo: "acme/app", Number: 7, HeadSHA: "aaa", State: github.PROpen, HeadChecks: github.ChecksSuccess,
+		Reviews: []github.Review{{ID: "PRR_1", Author: "rev", State: github.ReviewApproved, CommitSHA: "aaa", SubmittedAt: time.Now()}},
+	}
+	client := &api.Client{BaseURL: "http://metronome.test", Actor: "github", HTTP: &http.Client{Transport: handlerTransport{api.Handler(eng)}}}
+	p := github.Poller{Client: client, Source: fakeGitHub{"acme/app metronome/I1.1": snap}}
+	poll := func() github.PollResult {
+		t.Helper()
+		res, err := p.Once(context.Background())
+		if err != nil || len(res.Errors) > 0 {
+			t.Fatalf("poll error: %v, errors: %v", err, res.Errors)
+		}
+		return res
+	}
+	poll()
+	if sl := slice(t, eng); sl.Status != flow.SliceApproved || sl.PR.ApprovedSHA != "aaa" {
+		t.Fatalf("approved slice = %+v, PR = %+v", sl, sl.PR)
+	}
+	eng.View(func(s *flow.State) {
+		if it := s.Items["I1"]; it.Status != flow.ItemReleasing || !it.HoldsRelease {
+			t.Fatalf("item = %+v", it)
+		}
+	})
+	return eng, client, snap, poll
+}
+
+func wantRecorded(t *testing.T, res github.PollResult, want ...string) {
+	t.Helper()
+	var got []string
+	for _, action := range res.Recorded {
+		got = append(got, action.Event)
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("recorded = %v, want %v (notes %v)", got, want, res.Notes)
+	}
+}
+
+func TestAHeadThatMovesAfterApprovalWithdrawsItAndNeedsAFreshApproval(t *testing.T) {
+	eng, client, snap, poll := pollingApprovedSlice(t)
+	snap.HeadSHA = "bbb"
+	res := poll()
+	wantRecorded(t, res, "pr-opened", "checks", "ready-for-review")
+	if !strings.Contains(strings.Join(res.Notes, "\n"), "withdraws the approval") {
+		t.Fatalf("notes = %v", res.Notes)
+	}
+	if sl := slice(t, eng); sl.Status != flow.SliceInReview || sl.PR.HeadSHA != "bbb" || sl.PR.ApprovedSHA != "" || !sl.HoldsReview || sl.HoldsExecute || !sl.PR.ChecksRecorded || !sl.PR.ChecksGreen {
+		t.Fatalf("withdrawn slice = %+v, PR = %+v", sl, sl.PR)
+	}
+	var board api.Board
+	if err := client.Get(context.Background(), "/v1/board", &board); err != nil {
+		t.Fatal(err)
+	}
+	if board.Usage.Review != 1 || board.Usage.Release != 0 || board.Usage.PerApprover["rev"] != 1 || board.Items[0].Status != flow.ItemExecuting {
+		t.Fatalf("board = %+v", board)
+	}
+	before := len(eng.EventsAfter(0, 0))
+	wantRecorded(t, poll())
+	if len(eng.EventsAfter(0, 0)) != before {
+		t.Fatal("repeat poll added events")
+	}
+	snap.Reviews = append(snap.Reviews, github.Review{ID: "PRR_2", Author: "rev", State: github.ReviewApproved, CommitSHA: "bbb", SubmittedAt: snap.Reviews[0].SubmittedAt.Add(time.Minute)})
+	wantRecorded(t, poll(), "approved")
+	if sl := slice(t, eng); sl.Status != flow.SliceApproved || sl.PR.ApprovedSHA != "bbb" {
+		t.Fatalf("fresh approval = %+v, PR = %+v", sl, sl.PR)
+	}
+	eng.View(func(s *flow.State) {
+		if u := s.Usage(); u.Release != 1 || u.Review != 0 || u.PerApprover["rev"] != 0 {
+			t.Fatalf("usage = %+v", u)
+		}
+	})
+	snap.State = github.PRMerged
+	wantRecorded(t, poll(), "merged")
+	if sl := slice(t, eng); sl.Status != flow.SliceMerged {
+		t.Fatalf("merged slice = %+v", sl)
+	}
+}
+
+func TestAMergeAtAHeadOtherThanTheApprovedOneRecordsTheHeadThenTheMerge(t *testing.T) {
+	eng, _, snap, poll := pollingApprovedSlice(t)
+	snap.State, snap.HeadSHA, snap.MergedBy = github.PRMerged, "bbb", "pat"
+	res := poll()
+	wantRecorded(t, res, "pr-opened", "merged")
+	if res.Recorded[1].Request.By != "pat" {
+		t.Fatalf("merge = %+v", res.Recorded[1])
+	}
+	if sl := slice(t, eng); sl.Status != flow.SliceMerged || sl.PR.HeadSHA != "bbb" || sl.PR.ApprovedSHA != "bbb" || sl.HoldsReview || sl.HoldsExecute {
+		t.Fatalf("merged slice = %+v, PR = %+v", sl, sl.PR)
+	}
+	eng.View(func(s *flow.State) {
+		if u := s.Usage(); u.Release != 1 || u.Review != 0 || u.Execute != 0 {
+			t.Fatalf("usage = %+v", u)
+		}
+	})
+	before := len(eng.EventsAfter(0, 0))
+	wantRecorded(t, poll())
+	if len(eng.EventsAfter(0, 0)) != before {
+		t.Fatal("repeat poll added events")
+	}
+}
+
 func TestAFailingLookupIsReportedAndTheRestOfThePollGoesOn(t *testing.T) {
 	eng, err := flow.NewEngine(context.Background(), flow.DefaultConfig(), store.NewMemory(), nil)
 	if err != nil {
@@ -233,7 +353,65 @@ func TestAHeadPushedAwayAndBackInReviewCanStillBeApproved(t *testing.T) {
 	}
 }
 
-func TestAMergeBeforeApprovalLeavesTheSliceAsItWas(t *testing.T) {
+func TestASliceInReviewWhoseHeadTurnsRedGoesBackForReworkAndReturnsWhenGreen(t *testing.T) {
+	ctx := context.Background()
+	eng, err := flow.NewEngine(ctx, flow.DefaultConfig(), store.NewMemory(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	submittedSlice(t, eng)
+	key := "acme/app metronome/I1.1"
+	gh := fakeGitHub{key: {Repo: "acme/app", Number: 7, HeadSHA: "aaa", State: github.PROpen, HeadChecks: github.ChecksSuccess}}
+	p := github.Poller{
+		Client: &api.Client{BaseURL: "http://metronome.test", Actor: "github", HTTP: &http.Client{Transport: handlerTransport{api.Handler(eng)}}},
+		Source: gh,
+	}
+	poll := func() github.PollResult {
+		t.Helper()
+		res, err := p.Once(ctx)
+		if err != nil || len(res.Errors) > 0 {
+			t.Fatalf("poll: %v %v", err, res.Errors)
+		}
+		return res
+	}
+	poll()
+	if sl := slice(t, eng); sl.Status != flow.SliceInReview {
+		t.Fatalf("slice before red checks = %+v", sl)
+	}
+	gh[key].HeadSHA, gh[key].HeadChecks = "bbb", github.ChecksFailure
+	poll()
+	if sl := slice(t, eng); sl.Status != flow.SliceStalled || !sl.Rework || !sl.HoldsReview || sl.HoldsExecute || sl.PR.HeadSHA != "bbb" {
+		t.Fatalf("slice after red checks = %+v", sl)
+	}
+	var board api.Board
+	if err := p.Client.Get(ctx, "/v1/board", &board); err != nil {
+		t.Fatal(err)
+	}
+	if u := board.Usage; u.Execute != 0 || u.Review != 1 || u.PerApprover["rev"] != 0 {
+		t.Fatalf("usage after red checks = %+v", u)
+	}
+	if res := poll(); len(res.Recorded) != 0 {
+		t.Fatalf("poll recorded stalled slice: %v", res.Recorded)
+	}
+	r, err := eng.Claim(ctx, "laptop", "", "laptop", "")
+	must(t, r, err)
+	r, err = eng.Submit(ctx, "laptop", "", "R2", "metronome/I1.1")
+	must(t, r, err)
+	gh[key].HeadSHA, gh[key].HeadChecks = "ccc", github.ChecksSuccess
+	poll()
+	if sl := slice(t, eng); sl.Status != flow.SliceInReview || sl.PR.HeadSHA != "ccc" || sl.Rework || !sl.HoldsReview || sl.HoldsExecute {
+		t.Fatalf("slice after green checks on fixed head = %+v", sl)
+	}
+	board = api.Board{}
+	if err := p.Client.Get(ctx, "/v1/board", &board); err != nil {
+		t.Fatal(err)
+	}
+	if u := board.Usage; u.Execute != 0 || u.Review != 1 || u.PerApprover["rev"] != 1 {
+		t.Fatalf("usage back in review = %+v", u)
+	}
+}
+
+func TestAMergeBeforeApprovalIsRecordedAsApprovedByTheMerger(t *testing.T) {
 	eng, err := flow.NewEngine(context.Background(), flow.DefaultConfig(), store.NewMemory(), nil)
 	if err != nil {
 		t.Fatal(err)
@@ -248,15 +426,132 @@ func TestAMergeBeforeApprovalLeavesTheSliceAsItWas(t *testing.T) {
 	if _, err := p.Once(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	gh[key].State = github.PRMerged
+	gh[key].State, gh[key].MergedBy = github.PRMerged, "pat"
 	res, err := p.Once(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sl := slice(t, eng); sl.Status != flow.SlicePROpen {
-		t.Fatalf("a merge before approval changed the slice: %+v", sl)
+	sl := slice(t, eng)
+	if sl.Status != flow.SliceMerged || sl.PR.ApprovedSHA != "aaa" || sl.HoldsExecute || sl.HoldsReview {
+		t.Fatalf("after a merge before approval: %+v (notes %v)", sl, res.Notes)
 	}
-	if len(res.Notes) == 0 || !strings.Contains(res.Notes[0], "merged while pr_open") {
-		t.Fatalf("notes = %v", res.Notes)
+	if len(res.Recorded) != 1 || res.Recorded[0].String() != "I1.1 merged by pat, who approves it" {
+		t.Fatalf("recorded = %v", res.Recorded)
 	}
+}
+
+func pollWithoutWrites(t *testing.T, eng *flow.Engine, transport *countingTransport, poll func() github.PollResult) github.PollResult {
+	t.Helper()
+	before := len(eng.EventsAfter(0, 0))
+	posts := transport.posts
+	res := poll()
+	if len(res.Recorded) != 0 || transport.posts != posts || len(eng.EventsAfter(0, 0)) != before {
+		t.Fatalf("poll recorded %v, made %d POSTs and added %d events", res.Recorded, transport.posts-posts, len(eng.EventsAfter(0, 0))-before)
+	}
+	return res
+}
+
+func assertStalledPRNote(t *testing.T, res github.PollResult, outcome string) {
+	t.Helper()
+	if len(res.Notes) != 1 {
+		t.Fatalf("notes = %v, want one note", res.Notes)
+	}
+	for _, want := range []string{"I1.1", "acme/app#7", outcome, "a person must decide"} {
+		if !strings.Contains(res.Notes[0], want) {
+			t.Errorf("note %q does not mention %q", res.Notes[0], want)
+		}
+	}
+}
+
+func TestAMergeOfAStalledSlicesPRIsReportedAndNotRecorded(t *testing.T) {
+	ctx := context.Background()
+	eng, err := flow.NewEngine(ctx, flow.DefaultConfig(), store.NewMemory(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	submittedSlice(t, eng)
+	key := "acme/app metronome/I1.1"
+	gh := fakeGitHub{key: {Repo: "acme/app", Number: 7, HeadSHA: "aaa", State: github.PROpen, HeadChecks: github.ChecksFailure}}
+	transport := &countingTransport{handlerTransport: handlerTransport{api.Handler(eng)}}
+	p := github.Poller{
+		Client: &api.Client{BaseURL: "http://metronome.test", Actor: "github", HTTP: &http.Client{Transport: transport}},
+		Source: gh,
+	}
+	poll := func() github.PollResult {
+		t.Helper()
+		res, err := p.Once(ctx)
+		if err != nil || len(res.Errors) > 0 {
+			t.Fatalf("poll: %v %v", err, res.Errors)
+		}
+		return res
+	}
+	poll()
+	if sl := slice(t, eng); sl.Status != flow.SliceStalled || !sl.Rework || sl.PR == nil || sl.PR.HeadSHA != "aaa" {
+		t.Fatalf("slice after red checks = %+v", sl)
+	}
+	gh[key].HeadSHA, gh[key].HeadChecks = "bbb", github.ChecksSuccess
+	gh[key].Reviews = []github.Review{{ID: "PRR_1", Author: "rev", State: github.ReviewApproved, CommitSHA: "bbb", SubmittedAt: time.Now()}}
+	if res := pollWithoutWrites(t, eng, transport, poll); len(res.Notes) != 0 {
+		t.Fatalf("notes for open stalled PR = %v", res.Notes)
+	}
+	if sl := slice(t, eng); sl.Status != flow.SliceStalled || sl.PR.HeadSHA != "aaa" || sl.PR.ChecksGreen {
+		t.Fatalf("slice with a new green head = %+v", sl)
+	}
+	gh[key].State, gh[key].MergedBy = github.PRMerged, "pat"
+	res := pollWithoutWrites(t, eng, transport, poll)
+	assertStalledPRNote(t, res, "merged by pat")
+	if sl := slice(t, eng); sl.Status != flow.SliceStalled || sl.PR.HeadSHA != "aaa" || !sl.Rework {
+		t.Fatalf("slice after the merge = %+v", sl)
+	}
+	res = pollWithoutWrites(t, eng, transport, poll)
+	assertStalledPRNote(t, res, "merged by pat")
+}
+
+func TestACloseOfAStalledSlicesPRIsReported(t *testing.T) {
+	ctx := context.Background()
+	eng, err := flow.NewEngine(ctx, flow.DefaultConfig(), store.NewMemory(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	submittedSlice(t, eng)
+	key := "acme/app metronome/I1.1"
+	gh := fakeGitHub{key: {Repo: "acme/app", Number: 7, HeadSHA: "aaa", State: github.PROpen, HeadChecks: github.ChecksFailure}}
+	transport := &countingTransport{handlerTransport: handlerTransport{api.Handler(eng)}}
+	p := github.Poller{
+		Client: &api.Client{BaseURL: "http://metronome.test", Actor: "github", HTTP: &http.Client{Transport: transport}},
+		Source: gh,
+	}
+	poll := func() github.PollResult {
+		t.Helper()
+		res, err := p.Once(ctx)
+		if err != nil || len(res.Errors) > 0 {
+			t.Fatalf("poll: %v %v", err, res.Errors)
+		}
+		return res
+	}
+	poll()
+	if sl := slice(t, eng); sl.Status != flow.SliceStalled || !sl.Rework || sl.PR == nil {
+		t.Fatalf("slice after red checks = %+v", sl)
+	}
+	r, err := eng.Claim(ctx, "laptop", "", "laptop", "")
+	must(t, r, err)
+	if sl := slice(t, eng); sl.Status != flow.SliceRunning {
+		t.Fatalf("slice after claiming rework = %+v", sl)
+	}
+	if res := pollWithoutWrites(t, eng, transport, poll); len(res.Notes) != 0 {
+		t.Fatalf("notes for running slice = %v", res.Notes)
+	}
+	r, err = eng.ReleaseRun(ctx, "laptop", "", "R2")
+	must(t, r, err)
+	if sl := slice(t, eng); sl.Status != flow.SliceStalled || sl.PR == nil || sl.PR.Number != 7 {
+		t.Fatalf("slice after releasing rework = %+v", sl)
+	}
+	gh[key].State = github.PRClosed
+	res := pollWithoutWrites(t, eng, transport, poll)
+	assertStalledPRNote(t, res, "closed without merging")
+	if sl := slice(t, eng); sl.Status != flow.SliceStalled || sl.PR.HeadSHA != "aaa" {
+		t.Fatalf("slice after the close = %+v", sl)
+	}
+	res = pollWithoutWrites(t, eng, transport, poll)
+	assertStalledPRNote(t, res, "closed without merging")
 }

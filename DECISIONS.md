@@ -134,6 +134,63 @@ open.
 - **Every item carries its workstream and an optional source link from the start,** so pulling work between
   workstreams can be added later without migrating data.
 
+## Decided (2026-11-26): a merge before approval
+
+- **A merge counts as approval by whoever merged.** When a tracked PR merges while its slice is in `pr_open` or
+  `in_review`, Metronome records the slice as ready for review if it was not yet, approved at the merged head by
+  the user GitHub names as the merger, and then merged. Review and Release slots move exactly as for an approval
+  through review. Why: GitHub never lets a PR's author approve it, so a maintainer whose agents open PRs under
+  their own account, or a team that merges with admin rights, would otherwise leave slices holding Review slots
+  forever. Merging is already a deliberate human act, which section 1's "rules decide approvals" allows as the
+  rule.
+- **Not recorded:** a merge while the slice is being reworked (queued, running, flagged or stalled), and a merge
+  GitHub reports no merger for. The poller says so instead.
+- Proposed by the agent and accepted by the maintainer on 2026-11-26.
+
+## Decided (2026-11-26): failed checks in review
+
+- **A red head sends a slice in review back to the fixer.** Failed checks on the PR's current head of an
+  `in_review` slice stall it as rework, exactly as on `pr_open`: the next claim takes it first, it keeps its
+  Review reservation, and the claim takes an Execute slot again, as rework after a change request does. It
+  leaves its approver's count until it returns to review on green checks. Why: a red head cannot be approved,
+  so leaving it in review held Review capacity and the approver's attention while nobody could fix it.
+- **Failed check results for any other head are refused as stale** and change nothing.
+- Proposed by the agent and accepted by the maintainer on 2026-11-26.
+
+## Decided (2026-11-27): current-head checks
+
+- **Green check results for any other head are also refused as stale.** A new head must be recorded with
+  `pr-opened` before recording checks on it, including when checks are entered by hand. Why: a stale green
+  result would move the recorded head back and let `ReadyForReview` trust an old commit.
+- Proposed by the implementing agent and accepted by the maintainer on 2026-11-27.
+
+## Decided (2026-11-27): a head that moves after approval
+
+- A new head recorded for an `approved` slice withdraws the approval. The slice goes back to `pr_open` on the
+  new head, with its approval and checks cleared. It needs green checks and a fresh approval, or a merge, which
+  counts as approval by whoever merged. The poller records the moved head; a merge at a head other than the
+  approved one records the new head first, then the merge. Approvals are per head SHA, so unreviewed commits
+  must not ride an old approval.
+- Decided by the maintainer on 2026-11-27.
+
+## Agent decision (2026-11-27): withdrawing an approval
+
+- Restore the Review reservation even over the Review limit. New claims needing a reservation wait until usage
+  drops below the limit. The moved head is a fact: refusing it would preserve a stale approval, and leaving it
+  uncounted would hide reviewer load.
+- Return a `releasing` or `awaiting_release` item to `executing`, because it no longer has every approval. Free
+  its held Release slot and hand it to the best-ranked item awaiting release, just as `release-done` does.
+- Approved or merged siblings hold no Review slot while waiting on an unapproved slice, so move the awaiting
+  item's reservation to the withdrawn slice if a sibling kept it, even if that sibling has already merged.
+  Only the withdrawn slice needs review again; keeping both reservations would count it twice.
+- Do not take an Execute slot, because no runner is working on the new head.
+- Refuse `pr-opened` at the approved head, so a repeat cannot erase an approval or its checks.
+- Report another open PR on the branch at the approved head without recording it, since no new head withdraws
+  the approval.
+- Report, but do not record, a merge at a moved head with no merger named, following the 2026-11-26 rule that
+  approval by merge needs a named merger.
+- Decided by the implementing agent on 2026-11-27, separate from the maintainer's decision.
+
 ## Designed, not built: open workstreams and shared work (2026-11-26)
 
 Recorded so the data model leaves room for it. Nothing here is in the proof of concept.
@@ -261,8 +318,8 @@ Choices made while building step 1 where SPEC.md was silent. Each is easy to cha
   new slices by backlog rank.
 - **Moving into review needs green checks on the PR's head.** The per-approver cap is shown on the board but not
   enforced, because a person can mark a PR ready on GitHub at any time.
-- **An approval must name the PR's current head SHA,** or it is refused as stale. What happens when an approved
-  PR's head changes is not built; it needs the merge decisions in findings 8 and 9.
+- **An approval must name the PR's current head SHA,** or it is refused as stale. A moved head withdraws the
+  approval, per the decision of 2026-11-27.
 - **The expedite slot and untracked-PR adoption are not built yet.**
 - **The GitHub poller is level-triggered.** `metronome github poll` compares what GitHub shows now for each
   submitted slice's branch with what Metronome has recorded, and records only what differs, through the same API
@@ -277,10 +334,14 @@ Choices made while building step 1 where SPEC.md was silent. Each is easy to cha
 - **Checks:** only the latest run of each check on the head counts, and the worst of those decides. Skipped and
   neutral runs pass; cancelled runs fail. A head with no checks is never green, so a repository without CI keeps
   its slices out of review. A draft PR never moves into review.
-- **Reported, not recorded:** a PR closed without merging, a merge before Metronome recorded an approval, a head
-  that moves after approval, and a closed or merged PR on the branch that Metronome never recorded for the slice,
-  such as one left from an earlier use of the branch name. The engine has no rule for the merge and head cases
-  yet (findings 8 and 9).
+- **Reported, not recorded:** a PR closed without merging, and a closed or merged PR on the branch that
+  Metronome never recorded for the slice, such as one left from an earlier use of the branch name. The poller
+  also follows a stalled slice that has a recorded PR (waiting for rework after failed checks, a lost lease or a dropped rework
+  run), only to report: when that PR is merged or closed, the poll names the slice, the PR, what happened and who
+  merged if known, and says a person must decide, for example drop the item or reopen the work. The engine still
+  refuses a merge during rework, so nothing is recorded. While the PR is open, new heads, checks and reviews wait
+  until the fixer resubmits. Queued, running and flagged slices are not followed, so a merge while they are
+  reworked is not reported yet.
 
 ## Verified on the development machine
 
@@ -291,6 +352,8 @@ Choices made while building step 1 where SPEC.md was silent. Each is easy to cha
 
 Everything section 12 of SPEC.md marks Open or Unverified, plus:
 
+- 2026-11-27: what a withdrawal should do when a sibling PR of the item has already merged; today the item
+  returns to executing and the merged PR stays merged.
 - 2026-11-27: the board page has no authentication, like the API it reads; keep it on the default loopback
   address. How to protect the page and API when hosted with OIDC sign-in remains undecided.
 - 2026-11-27: whether to add a tail query to the events feed once logs grow, to avoid reading the whole log
@@ -300,10 +363,10 @@ Everything section 12 of SPEC.md marks Open or Unverified, plus:
 - 2026-11-27: terminal Ctrl-C signals the foreground process group, so the wrapped command may receive SIGINT
   twice (directly and forwarded). Whether to suppress forwarding when stdin is a terminal or use a separate
   process group is undecided.
+- 2026-11-27: whether the poller should also report merges and closes for queued, running and flagged slices
+  that have a PR; the merge-during-rework reporting decided on 2026-11-26 currently covers only stalled slices.
 - The repository for the proof-of-concept pilot, and the mapping from its approver's rules to tiers 0 to 3.
 - How the local service authenticates to the approver's results.
 - When a workstream's own backlog and its subscriptions compete for one free slot, which goes first.
 - Which other kinds of identity link to support, such as agent attribution tools.
 - How the OIDC provider is configured for a self-hosted install.
-- A check failure on a slice already in review leaves it in review; only the approval waits. Whether it should
-  go back to the fixer.

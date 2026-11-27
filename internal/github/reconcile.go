@@ -31,6 +31,10 @@ func (a Action) String() string {
 		return fmt.Sprintf("%s approved by %s at %s", r.SliceID, r.By, short(r.HeadSHA))
 	case "changes-requested":
 		return fmt.Sprintf("%s changes requested by %s", r.SliceID, r.By)
+	case "merged":
+		if r.By != "" {
+			return fmt.Sprintf("%s merged by %s, who approves it", r.SliceID, r.By)
+		}
 	}
 	return r.SliceID + " " + a.Event
 }
@@ -49,6 +53,8 @@ func Tracked(sl flow.Slice) bool {
 	switch sl.Status {
 	case flow.SliceSubmitted, flow.SlicePROpen, flow.SliceInReview, flow.SliceApproved:
 		return true
+	case flow.SliceStalled:
+		return sl.PR != nil
 	}
 	return false
 }
@@ -74,14 +80,46 @@ func Reconcile(sl flow.Slice, snap *Snapshot) (actions []Action, notes []string)
 		note("the only PR on branch %s is %s, which Metronome never recorded for this slice; nothing recorded", sl.Branch, strings.ToLower(string(snap.State)))
 		return actions, notes
 	}
+	if sl.Status == flow.SliceStalled {
+		decision := "nothing recorded, and a person must decide, for example drop the item or reopen the work"
+		switch snap.State {
+		case PRMerged:
+			if snap.MergedBy == "" {
+				note("merged while the slice is stalled for rework, but GitHub does not say who merged it; %s", decision)
+			} else {
+				note("merged by %s while the slice is stalled for rework; Metronome does not record a merge during rework; %s", snap.MergedBy, decision)
+			}
+		case PRClosed:
+			note("closed without merging while the slice is stalled for rework; %s", decision)
+		}
+		return actions, notes
+	}
 	switch snap.State {
 	case PRClosed:
 		note("closed without merging; nothing recorded")
 		return actions, notes
 	case PRMerged:
 		if sl.Status == flow.SliceApproved {
-			add("merged", "merged", api.GitHubRequest{SliceID: sl.ID})
-		} else {
+			if sl.PR.HeadSHA == snap.HeadSHA {
+				add("merged", "merged", api.GitHubRequest{SliceID: sl.ID})
+				return actions, notes
+			}
+			if snap.MergedBy == "" {
+				note("merged at %s, not the approved head %s, and GitHub does not say who merged it; nothing recorded", short(snap.HeadSHA), short(sl.PR.HeadSHA))
+				return actions, notes
+			}
+		}
+		switch sl.Status {
+		case flow.SliceSubmitted, flow.SlicePROpen, flow.SliceInReview, flow.SliceApproved:
+			if snap.MergedBy == "" {
+				note("merged before approval, but GitHub does not say who merged it; nothing recorded")
+				return actions, notes
+			}
+			if sl.Status == flow.SliceSubmitted || sl.PR.HeadSHA != snap.HeadSHA {
+				add("pr-opened", fmt.Sprintf("opened:%s:v%d", snap.HeadSHA, sl.Version), base)
+			}
+			add("merged", "merged", api.GitHubRequest{SliceID: sl.ID, By: snap.MergedBy})
+		default:
 			note("merged while %s in Metronome; nothing recorded", sl.Status)
 		}
 		return actions, notes
@@ -92,15 +130,18 @@ func Reconcile(sl flow.Slice, snap *Snapshot) (actions []Action, notes []string)
 	if known {
 		recorded = *sl.PR
 	}
-	if status == flow.SliceApproved {
-		if recorded.HeadSHA != snap.HeadSHA {
-			note("head moved from %s to %s after approval; not recorded", short(recorded.HeadSHA), short(snap.HeadSHA))
+	if status == flow.SliceApproved && sl.PR.HeadSHA == snap.HeadSHA {
+		if !known {
+			note("PR #%d on the branch is at the approved head; nothing recorded", snap.Number)
 		}
 		return actions, notes
 	}
 	if !known || status == flow.SliceSubmitted || recorded.HeadSHA != snap.HeadSHA {
 		add("pr-opened", fmt.Sprintf("opened:%s:v%d", snap.HeadSHA, sl.Version), base)
-		if status == flow.SliceSubmitted {
+		if status == flow.SliceApproved {
+			note("head moved from %s to %s after approval; recording it withdraws the approval", short(sl.PR.HeadSHA), short(snap.HeadSHA))
+		}
+		if status == flow.SliceSubmitted || status == flow.SliceApproved {
 			status = flow.SlicePROpen
 		}
 		recorded = flow.PR{Repo: snap.Repo, Number: snap.Number, HeadSHA: snap.HeadSHA}
@@ -115,7 +156,7 @@ func Reconcile(sl flow.Slice, snap *Snapshot) (actions []Action, notes []string)
 			add("checks", fmt.Sprintf("checks:%s:%s:v%d", snap.HeadSHA, snap.HeadChecks, sl.Version), req)
 			recorded.ChecksRecorded, recorded.ChecksGreen = true, success
 		}
-		if !success && status == flow.SlicePROpen {
+		if !success && (status == flow.SlicePROpen || status == flow.SliceInReview) {
 			return actions, notes
 		}
 	case ChecksNone:

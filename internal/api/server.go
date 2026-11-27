@@ -142,7 +142,7 @@ func Handler(eng *flow.Engine) http.Handler {
 		case "changes-requested":
 			return eng.PRChangesRequested(ctx, c.actor, c.requestID, req.SliceID, req.By)
 		case "merged":
-			return eng.PRMerged(ctx, c.actor, c.requestID, req.SliceID)
+			return eng.PRMerged(ctx, c.actor, c.requestID, req.SliceID, req.By)
 		}
 		return flow.Result{}, &flow.Error{Code: flow.CodeNotFound, Message: "unknown GitHub event " + r.PathValue("event")}
 	}))
