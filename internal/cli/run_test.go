@@ -160,6 +160,11 @@ type runningCommand struct {
 
 func startRun(e *env, args ...string) *runningCommand {
 	e.t.Helper()
+	return startRunWithTerminal(e, false, args...)
+}
+
+func startRunWithTerminal(e *env, terminal bool, args ...string) *runningCommand {
+	e.t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	command := &runningCommand{done: make(chan struct{}), cancel: cancel}
 	e.t.Cleanup(func() {
@@ -168,7 +173,9 @@ func startRun(e *env, args ...string) *runningCommand {
 	})
 	go func() {
 		defer close(command.done)
-		command.code = cli.RunWithHTTP(ctx, append([]string{"--server", "http://metronome.test", "--as", "laptop"}, args...), &command.out, &command.errOut, e.http)
+		command.code = cli.RunWithDeps(ctx, append([]string{"--server", "http://metronome.test", "--as", "laptop"}, args...), &command.out, &command.errOut, cli.Deps{
+			HTTP: e.http, Terminal: func() bool { return terminal },
+		})
 	}()
 	return command
 }
@@ -374,22 +381,25 @@ func TestRunCommandClosesRun(t *testing.T) {
 
 func TestRunForwardsSignals(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		sig  os.Signal
+		name     string
+		terminal bool
+		sig      os.Signal
+		want     os.Signal
 	}{
-		{"SIGTERM", syscall.SIGTERM},
-		{"SIGINT", os.Interrupt},
-		{"cancellation", nil},
+		{"SIGTERM", false, syscall.SIGTERM, syscall.SIGTERM},
+		{"SIGTERM with terminal", true, syscall.SIGTERM, syscall.SIGTERM},
+		{"SIGINT", false, os.Interrupt, os.Interrupt},
+		{"SIGINT with terminal", true, os.Interrupt, syscall.SIGTERM},
+		{"cancellation", false, nil, syscall.SIGTERM},
+		{"cancellation with terminal", true, nil, syscall.SIGTERM},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e := newBriefEnv(t)
 			pathReady, pathSignal := filepath.Join(e.dir, "ready"), filepath.Join(e.dir, "signal")
-			cmd := startRun(e, append([]string{"run", "--runner", "laptop", "--"}, helper(t, "trap", pathReady, pathSignal)...)...)
+			cmd := startRunWithTerminal(e, tc.terminal, append([]string{"run", "--runner", "laptop", "--"}, helper(t, "trap", pathReady, pathSignal)...)...)
 			waitFor(t, func() bool { return fileExists(pathReady) })
-			want := tc.sig
 			if tc.sig == nil {
 				cmd.cancel()
-				want = syscall.SIGTERM
 			} else {
 				process, err := os.FindProcess(os.Getpid())
 				if err != nil {
@@ -398,11 +408,26 @@ func TestRunForwardsSignals(t *testing.T) {
 				if err := process.Signal(tc.sig); err != nil {
 					t.Fatal(err)
 				}
+				if tc.terminal && tc.sig == os.Interrupt {
+					lateSignals := make(chan os.Signal, 1)
+					signal.Notify(lateSignals, syscall.SIGTERM)
+					defer signal.Stop(lateSignals)
+					deadline := time.Now().Add(10 * time.Second)
+					for !fileExists(pathSignal) && time.Now().Before(deadline) {
+						time.Sleep(50 * time.Millisecond)
+						if fileExists(pathSignal) {
+							break
+						}
+						if err := process.Signal(syscall.SIGTERM); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
 			}
 			cmd.expectExit(t, 7)
 			data, err := os.ReadFile(pathSignal)
-			if err != nil || string(data) != want.String() {
-				t.Fatalf("signal = %q, err %v, want %s", data, err, want)
+			if err != nil || string(data) != tc.want.String() {
+				t.Fatalf("signal = %q, err %v, want %s", data, err, tc.want)
 			}
 			assertRunClosed(e, flow.CloseReleased, "")
 		})

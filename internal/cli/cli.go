@@ -20,6 +20,7 @@ import (
 	"github.com/jystringfellow/metronome/internal/flow"
 	"github.com/jystringfellow/metronome/internal/github"
 	"github.com/jystringfellow/metronome/internal/store"
+	"github.com/mattn/go-isatty"
 )
 
 const defaultServer = "http://127.0.0.1:7340"
@@ -74,11 +75,13 @@ type app struct {
 	client      *api.Client
 	requestID   string
 	prs         github.Source
+	terminal    func() bool
 }
 
 type Deps struct {
-	HTTP   *http.Client
-	GitHub github.Source
+	HTTP     *http.Client
+	GitHub   github.Source
+	Terminal func() bool
 }
 
 func Run(ctx context.Context, args []string, out, errOut io.Writer) int {
@@ -96,6 +99,9 @@ func RunWithDeps(ctx context.Context, args []string, out, errOut io.Writer, deps
 	if deps.GitHub == nil {
 		deps.GitHub = github.GH{}
 	}
+	if deps.Terminal == nil {
+		deps.Terminal = func() bool { return isatty.IsTerminal(os.Stdin.Fd()) }
+	}
 	global := flag.NewFlagSet("metronome", flag.ContinueOnError)
 	global.SetOutput(errOut)
 	global.Usage = func() { fmt.Fprint(errOut, usage) }
@@ -110,7 +116,7 @@ func RunWithDeps(ctx context.Context, args []string, out, errOut io.Writer, deps
 		global.Usage()
 		return 2
 	}
-	a := &app{out: out, errOut: errOut, requestID: *requestID, prs: deps.GitHub,
+	a := &app{out: out, errOut: errOut, requestID: *requestID, prs: deps.GitHub, terminal: deps.Terminal,
 		client: &api.Client{BaseURL: *server, Actor: *actor, HTTP: deps.HTTP}}
 	if err := a.dispatch(ctx, rest[0], rest[1:]); err != nil {
 		var status exitStatus

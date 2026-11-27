@@ -233,8 +233,11 @@ The branch file must contain a single branch name. Surrounding whitespace is tri
 multi-line file means no branch. A failure to close the run other than a conflict changes a successful
 command's exit code to 1. Read the messages as well as the exit code: exit 0 does not guarantee submission.
 
-`run` forwards SIGINT and SIGTERM to the command. Cancellation of its caller forwards SIGTERM. Ctrl-C in a
-terminal may deliver SIGINT to the command twice; this is an open question in [DECISIONS.md](../DECISIONS.md).
+`run` always forwards SIGTERM to the command and forwards SIGINT unless its standard input is a terminal.
+Cancellation of its caller forwards SIGTERM. The command and its own subprocesses stay in `run`'s process
+group, so a terminal Ctrl-C reaches the whole tree once. With a terminal on stdin, a SIGINT sent only to
+the wrapper's PID (for example `kill -INT`) is not forwarded. Send SIGTERM instead, as process managers
+and automation do.
 
 For example, start a Claude Code agent in the slice's repository:
 
