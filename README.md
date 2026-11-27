@@ -37,8 +37,13 @@ workstream's Ready queue. The command owns source access and reports claims held
 Unlike add-only `backlog sync`, intake updates Ready items and shelves those missing or claimed elsewhere;
 it never discards work in Plan or later.
 
+`metronome github issues` is a read-only intake source for open labelled GitHub issues. It uses `gh`,
+optionally ranks issues by a GitHub Project's numeric field, and supplies one pre-planned slice per issue.
+Plans still need their owner's approval. See [intake](docs/intake.md) for the mapping and flags.
+
 ```sh
 go build -o metronome ./cmd/metronome
+export PATH="$PWD:$PATH"
 ./metronome serve --db metronome.db &
 
 ./metronome backlog sync backlog.json        # {"items":[{"ref":"ACME-1","title":"…","intent":"…","owner":"pat"}]} (optional predicted_tier and slices; see docs/backlog.md)
@@ -58,6 +63,8 @@ go build -o metronome ./cmd/metronome
 ./metronome workstream create example --execute 0
 ./metronome backlog sync --workstream example source.json
 ./metronome intake --workstream example --every 10m -- ./backlog-from-source.sh
+./metronome workstream create metronome
+metronome intake --workstream metronome --every 10m -- metronome github issues --repo OWNER/NAME --project OWNER/N --rank-field Rank
 ./metronome workstream set example --execute 2
 ./metronome workstream list
 ./metronome board --workstream example

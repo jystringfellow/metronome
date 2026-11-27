@@ -79,7 +79,35 @@ Running the same complete source output twice against unchanged tracker state em
 second round. Notes may repeat. `POST /v1/backlog/intake` offers the same mirror rules to API callers and
 requires both `workstream` and `items`. The older `backlog sync` remains add-only, skipping foreign claims.
 
-## Example: reading GitHub issues
+## Built in: GitHub Issues
+
+```sh
+metronome github issues --repo acme/app --owner pat
+metronome intake --workstream metronome --every 10m -- metronome github issues --repo OWNER/NAME --project OWNER/N --rank-field Rank
+```
+
+Create the workstream before running intake. The command reads all open issues with `--label` (default
+`metronome`) through `gh`, using whoever `gh` is signed in as. With `--project OWNER/NUMBER`, it reads
+the project's numeric `--rank-field` (default `Rank`); project access requires the `read:project` scope
+(`gh auth refresh -s read:project`). Ranked issues come first in ascending rank order; unranked issues
+come last. Ties and issues without a project are ordered oldest first, then by issue number.
+
+| Backlog field | Issue mapping |
+| --- | --- |
+| `ref` | `OWNER/NAME#N`, or the token in a standalone `Metronome: REF` line outside fenced code. Use the original ref to migrate existing backlog items. |
+| `title` | Issue title. |
+| `intent` | First prose paragraph, condensed to one line and capped at 500 characters; empty for no body. |
+| `owner` | First assignee's login, otherwise `--owner`. |
+| `predicted_tier` | A `tier:N` label (0–3), omitted when absent. |
+| `slices` | One slice with the same title and repository, no dependencies or named approvers. |
+| `criteria` | List items in an Acceptance criteria heading's section, otherwise markdown task-list items. Wrapped text is joined, including checked tasks. |
+
+Pull requests, non-issue or unreadable project items, and project items from other repositories are skipped.
+Missing owners, invalid or conflicting tier labels, duplicate refs, missing or nonnumeric project fields,
+and failed reads exit nonzero without printing backlog JSON. With no matching issues, `items` is empty.
+The built-in command is read-only, publishes no claims, and does not contact the Metronome service.
+
+## Example: writing another source command
 
 This Bash command reads issues in the `ready` list. It assumes `pat` is responsible for the work and that
 any assignee other than `pat` denotes a foreign claim. Adapt that convention to your source; a shared
