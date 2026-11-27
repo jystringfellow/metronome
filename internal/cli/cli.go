@@ -43,7 +43,9 @@ Workstreams:
 
 Backlog and plan:
   backlog sync [--workstream NAME] FILE  add ranked items (default workstream if omitted)
+                         skips items with "claimed_by" set
                          items may carry "slices" (as plan propose) and an optional "predicted_tier" (default 1); see docs/backlog.md
+  intake --workstream NAME [--every D] -- CMD [ARGS...]  mirror Ready from a source command; see docs/intake.md
   plan start [--workstream NAME] [ITEM]  pull the top ready item with capacity
                          an item with backlog slices is proposed and its owner asked to approve
   plan propose ITEM --slices FILE [--approver WHO]
@@ -168,6 +170,8 @@ func (a *app) dispatch(ctx context.Context, cmd string, args []string) error {
 		return a.events(ctx, args)
 	case "backlog":
 		return a.backlog(ctx, args)
+	case "intake":
+		return a.intake(ctx, args)
 	case "workstream":
 		return a.workstream(ctx, args)
 	case "plan":
@@ -279,7 +283,7 @@ func (a *app) board(ctx context.Context, args []string) error {
 			if it.Workstream != ws.Name {
 				continue
 			}
-			if it.Status == flow.ItemDone || it.Status == flow.ItemDropped {
+			if it.Status == flow.ItemDone || it.Status == flow.ItemDropped || it.Status == flow.ItemShelved {
 				continue
 			}
 			fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%s\n", it.ID, it.Status, it.PredictedTier, it.Owner, it.Title)
@@ -820,6 +824,9 @@ func (a *app) post(ctx context.Context, path string, body any) error {
 	}
 	for _, ev := range res.Events {
 		fmt.Fprintf(a.out, "%d\t%s\t%s\n", ev.Seq, ev.Type, ev.Data)
+	}
+	for _, note := range res.Notes {
+		fmt.Fprintln(a.out, "note "+note)
 	}
 	if len(res.Events) == 0 {
 		fmt.Fprintln(a.out, "no change")

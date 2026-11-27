@@ -1,7 +1,8 @@
 # Backlog JSON contract
 
 Metronome reads ranked work from an external backlog; it does not own that backlog. Supply this JSON
-to `metronome backlog sync [--workstream NAME] FILE` or `POST /v1/backlog/sync`.
+to `metronome backlog sync [--workstream NAME] FILE` or `POST /v1/backlog/sync`, or print it from
+an [intake command](intake.md).
 
 ## Request fields
 
@@ -21,6 +22,7 @@ to `metronome backlog sync [--workstream NAME] FILE` or `POST /v1/backlog/sync`.
 | `value` | number | No | `0` | Item value. |
 | `predicted_tier` | integer, 0 to 3 | No | `1` | Tier proposed for confirmation. If absent or `null`, the approval ask explains the default; explicit `0` stays 0. |
 | `slices` | array of slices | No | empty | Pre-planned slices. Absent, `null` or `[]` means the plan must be proposed in Plan. |
+| `claimed_by` | string | No | `""` | Nonempty when the source reports a claim held by someone other than this Metronome instance. The source command recognises its own claims. |
 
 ## Slice fields
 
@@ -40,6 +42,8 @@ even known refs; an invalid slice refuses the entire sync and names its item by 
 
 Refill adds items only when Ready is below the refill threshold, up to the workstream's Ready limit.
 Known references are skipped in their entirety, including any new slices or tier in the request.
+`backlog sync` also skips and reports items with `claimed_by` set. For an actual mirror rather than
+add-only refill, use [intake](intake.md), which requires an explicit workstream and a non-null `items` array.
 `plan start` proposes pre-planned slices and raises an approval ask for the owner. A person can replace
 the proposal with `plan propose`. `plan approve ITEM [--tier N]` approves the plan and confirms the tier;
 without `--tier`, the predicted tier is confirmed.

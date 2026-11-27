@@ -9,6 +9,7 @@ type ItemStatus string
 
 const (
 	ItemReady           ItemStatus = "ready"
+	ItemShelved         ItemStatus = "shelved"
 	ItemPlanning        ItemStatus = "planning"
 	ItemExecuting       ItemStatus = "executing"
 	ItemAwaitingRelease ItemStatus = "awaiting_release"
@@ -62,6 +63,8 @@ type Item struct {
 	ConfirmedTier int         `json:"confirmed_tier"`
 	Rank          int         `json:"rank"`
 	Status        ItemStatus  `json:"status"`
+	ShelvedReason string      `json:"shelved_reason,omitempty"`
+	ClaimedBy     string      `json:"claimed_by,omitempty"`
 	HoldsPlan     bool        `json:"holds_plan"`
 	HoldsRelease  bool        `json:"holds_release"`
 	Front         bool        `json:"front"`

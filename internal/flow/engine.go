@@ -50,8 +50,9 @@ func CodeOf(err error) ErrorCode {
 }
 
 type Result struct {
-	Events    []Event `json:"events"`
-	Duplicate bool    `json:"duplicate,omitempty"`
+	Events    []Event  `json:"events"`
+	Duplicate bool     `json:"duplicate,omitempty"`
+	Notes     []string `json:"notes,omitempty"`
 }
 
 type Engine struct {
@@ -148,7 +149,7 @@ func (e *Engine) execute(ctx context.Context, actor, requestID string, fn func(d
 
 func (e *Engine) commit(ctx context.Context, d *decider) (Result, error) {
 	if len(d.events) == 0 {
-		return Result{Events: []Event{}}, nil
+		return Result{Events: []Event{}, Notes: d.notes}, nil
 	}
 	stored, err := e.store.Append(ctx, d.events)
 	if err != nil {
@@ -160,7 +161,7 @@ func (e *Engine) commit(ctx context.Context, d *decider) (Result, error) {
 		}
 		e.record(ev)
 	}
-	return Result{Events: stored}, nil
+	return Result{Events: stored, Notes: d.notes}, nil
 }
 
 func (e *Engine) newDecider(now time.Time, actor, requestID string) *decider {
@@ -190,11 +191,16 @@ type decider struct {
 	actor     string
 	requestID string
 	events    []Event
+	notes     []string
 	newItems  int
 	newRuns   int
 	newFlags  int
 
 	closedFlags map[string]bool
+}
+
+func (d *decider) note(format string, args ...any) {
+	d.notes = append(d.notes, fmt.Sprintf(format, args...))
 }
 
 func (d *decider) emit(typ string, payload any) {
