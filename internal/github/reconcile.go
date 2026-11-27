@@ -99,10 +99,18 @@ func Reconcile(sl flow.Slice, snap *Snapshot) (actions []Action, notes []string)
 		note("closed without merging; nothing recorded")
 		return actions, notes
 	case PRMerged:
+		if sl.Status == flow.SliceApproved {
+			if sl.PR.HeadSHA == snap.HeadSHA {
+				add("merged", "merged", api.GitHubRequest{SliceID: sl.ID})
+				return actions, notes
+			}
+			if snap.MergedBy == "" {
+				note("merged at %s, not the approved head %s, and GitHub does not say who merged it; nothing recorded", short(snap.HeadSHA), short(sl.PR.HeadSHA))
+				return actions, notes
+			}
+		}
 		switch sl.Status {
-		case flow.SliceApproved:
-			add("merged", "merged", api.GitHubRequest{SliceID: sl.ID})
-		case flow.SliceSubmitted, flow.SlicePROpen, flow.SliceInReview:
+		case flow.SliceSubmitted, flow.SlicePROpen, flow.SliceInReview, flow.SliceApproved:
 			if snap.MergedBy == "" {
 				note("merged before approval, but GitHub does not say who merged it; nothing recorded")
 				return actions, notes
@@ -122,15 +130,18 @@ func Reconcile(sl flow.Slice, snap *Snapshot) (actions []Action, notes []string)
 	if known {
 		recorded = *sl.PR
 	}
-	if status == flow.SliceApproved {
-		if recorded.HeadSHA != snap.HeadSHA {
-			note("head moved from %s to %s after approval; not recorded", short(recorded.HeadSHA), short(snap.HeadSHA))
+	if status == flow.SliceApproved && sl.PR.HeadSHA == snap.HeadSHA {
+		if !known {
+			note("PR #%d on the branch is at the approved head; nothing recorded", snap.Number)
 		}
 		return actions, notes
 	}
 	if !known || status == flow.SliceSubmitted || recorded.HeadSHA != snap.HeadSHA {
 		add("pr-opened", fmt.Sprintf("opened:%s:v%d", snap.HeadSHA, sl.Version), base)
-		if status == flow.SliceSubmitted {
+		if status == flow.SliceApproved {
+			note("head moved from %s to %s after approval; recording it withdraws the approval", short(sl.PR.HeadSHA), short(snap.HeadSHA))
+		}
+		if status == flow.SliceSubmitted || status == flow.SliceApproved {
 			status = flow.SlicePROpen
 		}
 		recorded = flow.PR{Repo: snap.Repo, Number: snap.Number, HeadSHA: snap.HeadSHA}

@@ -66,6 +66,11 @@ func TestReconcile(t *testing.T) {
 	draft.Draft = true
 	approvedSlice := inReview("aaa")
 	approvedSlice.Status = flow.SliceApproved
+	approvedSlice.PR.ApprovedSHA = "aaa"
+	movedDraft := open("bbb", ChecksSuccess)
+	movedDraft.Draft = true
+	movedMergeByNobody := open("bbb", ChecksSuccess)
+	movedMergeByNobody.State = PRMerged
 
 	cases := []struct {
 		name  string
@@ -114,7 +119,17 @@ func TestReconcile(t *testing.T) {
 		{"an old closed PR on a stalled slice's branch is ignored", stalled(), &Snapshot{Repo: "acme/app", Number: 9, State: PRClosed}, nil, "never recorded"},
 		{"an old merged PR on a reused branch is ignored", submitted(), merged, nil, "never recorded"},
 		{"a PR closed without merging records nothing", inReview("aaa"), closed, nil, "closed without merging"},
-		{"a head that moves after approval is reported, not recorded", approvedSlice, open("bbb", ChecksSuccess), nil, "after approval"},
+		{"a green head that moves after approval withdraws it", approvedSlice, open("bbb", ChecksSuccess), []string{"pr-opened", "checks", "ready-for-review"}, "withdraws the approval"},
+		{"a pending head withdraws approval", approvedSlice, open("bbb", ChecksPending), []string{"pr-opened"}, ""},
+		{"a failed head withdraws approval", approvedSlice, open("bbb", ChecksFailure), []string{"pr-opened", "checks"}, ""},
+		{"a moved head can be freshly approved", approvedSlice, open("bbb", ChecksSuccess, review("r2", "rev", ReviewApproved, "bbb", 2)), []string{"pr-opened", "checks", "ready-for-review", "approved"}, ""},
+		{"the old approval cannot approve a moved head", approvedSlice, open("bbb", ChecksSuccess, review("r1", "rev", ReviewApproved, "aaa", 1)), []string{"pr-opened", "checks", "ready-for-review"}, "is for aaa"},
+		{"a moved draft head stays out of review", approvedSlice, movedDraft, []string{"pr-opened", "checks"}, ""},
+		{"the same approved head records nothing", approvedSlice, open("aaa", ChecksSuccess), nil, ""},
+		{"another PR at the approved head records nothing", approvedSlice, &Snapshot{Repo: "acme/app", Number: 9, HeadSHA: "aaa", State: PROpen, HeadChecks: ChecksSuccess}, nil, "approved head"},
+		{"another PR at a moved head withdraws approval", approvedSlice, &Snapshot{Repo: "acme/app", Number: 9, HeadSHA: "bbb", State: PROpen, HeadChecks: ChecksSuccess}, []string{"pr-opened", "checks", "ready-for-review"}, "withdraws the approval"},
+		{"a merge at a moved head records the head then the merge", approvedSlice, mergedNewHead, []string{"pr-opened", "merged"}, ""},
+		{"a merge at a moved head with no merger records nothing", approvedSlice, movedMergeByNobody, nil, "who merged"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -125,7 +140,7 @@ func TestReconcile(t *testing.T) {
 			if c.note != "" && !strings.Contains(strings.Join(notes, "\n"), c.note) {
 				t.Fatalf("notes %v do not mention %q", notes, c.note)
 			}
-			if c.slice.Status == flow.SliceStalled && c.note == "" && len(notes) != 0 {
+			if (c.slice.Status == flow.SliceStalled || c.name == "the same approved head records nothing") && c.note == "" && len(notes) != 0 {
 				t.Fatalf("notes = %v, want none", notes)
 			}
 		})
@@ -150,6 +165,22 @@ func TestAMergeBeforeApprovalNamesTheMerger(t *testing.T) {
 	actions, _ := Reconcile(inReview("aaa"), snap)
 	if len(actions) != 1 || actions[0].Request.By != "pat" {
 		t.Fatalf("actions = %+v, want one merge by pat", actions)
+	}
+}
+
+func TestAMergeAtAMovedHeadNamesTheMerger(t *testing.T) {
+	sl := inReview("aaa")
+	sl.Status, sl.PR.ApprovedSHA = flow.SliceApproved, "aaa"
+	snap := open("bbb", ChecksSuccess)
+	snap.State, snap.MergedBy = PRMerged, "pat"
+	actions, _ := Reconcile(sl, snap)
+	if !slices.Equal(events(actions), []string{"pr-opened", "merged"}) || actions[0].Request.HeadSHA != "bbb" || actions[1].Request.By != "pat" {
+		t.Fatalf("actions = %+v, want new head followed by merge by pat", actions)
+	}
+	snap.HeadSHA = "aaa"
+	actions, _ = Reconcile(sl, snap)
+	if !slices.Equal(events(actions), []string{"merged"}) || actions[0].Request.By != "" {
+		t.Fatalf("actions = %+v, want only the merge without a new approval", actions)
 	}
 }
 

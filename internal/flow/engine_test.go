@@ -119,6 +119,33 @@ func (h *harness) toReview(sliceID string) {
 	h.ok(h.eng.ReadyForReview(ctx(), "github", "", sliceID))
 }
 
+func (h *harness) newHead(sliceID, sha string) {
+	h.t.Helper()
+	h.ok(h.eng.PROpened(ctx(), "github", "", sliceID, "acme/app", 10, sha))
+}
+
+func (h *harness) reapprove(sliceID, sha string) {
+	h.t.Helper()
+	h.ok(h.eng.ChecksCompleted(ctx(), "github", "", sliceID, sha, true))
+	h.ok(h.eng.ReadyForReview(ctx(), "github", "", sliceID))
+	h.ok(h.eng.PRApproved(ctx(), "github", "", sliceID, sha, "rev"))
+}
+
+func (h *harness) claimAndApprove() string {
+	h.t.Helper()
+	id := h.claim("laptop").SliceID
+	h.toReview(id)
+	h.ok(h.eng.PRApproved(ctx(), "github", "", id, "sha-"+id, "rev"))
+	return id
+}
+
+func (h *harness) wantSlots(review, release int) {
+	h.t.Helper()
+	if u := h.usage(); u.Review != review || u.Release != release {
+		h.t.Fatalf("usage = %+v, want Review %d, Release %d", u, review, release)
+	}
+}
+
 func TestBacklogRefillsToTheReadyLimitOnlyBelowTheThreshold(t *testing.T) {
 	h := newHarness(t, nil)
 	h.backlog(14)
@@ -504,6 +531,225 @@ func TestFullReleaseBacksUpIntoReviewUntilASlotFrees(t *testing.T) {
 	if it := h.item(waiting.ID); it.Status != flow.ItemReleasing || h.slice(second.SliceID).HoldsReview {
 		t.Fatalf("waiting item = %s after a Release slot freed, want releasing with Review freed", it.Status)
 	}
+}
+
+func TestANewHeadOnAnApprovedSliceWhoseSiblingWaitsWithdrawsTheApproval(t *testing.T) {
+	h := newHarness(t, nil)
+	h.backlog(1)
+	h.approvedItem("I1", 2)
+	first, second := h.claim("r1").SliceID, h.claim("r2").SliceID
+	h.toReview(first)
+	h.toReview(second)
+	h.ok(h.eng.PRApproved(ctx(), "github", "", first, "sha-"+first, "rev"))
+	h.wantSlots(1, 0)
+	h.newHead(first, "bbb")
+	if sl := h.slice(first); sl.Status != flow.SlicePROpen || sl.PR.HeadSHA != "bbb" || sl.PR.ApprovedSHA != "" || sl.PR.ChecksRecorded || sl.PR.ChecksGreen || !sl.HoldsReview || sl.HoldsExecute {
+		t.Fatalf("withdrawn slice = %+v, PR = %+v", sl, sl.PR)
+	}
+	h.wantSlots(2, 0)
+	if it := h.item("I1"); it.Status != flow.ItemExecuting {
+		t.Fatalf("item = %+v", it)
+	}
+	_, err := h.eng.ReadyForReview(ctx(), "github", "", first)
+	wantCode(t, err, flow.CodeConflict)
+	h.reapprove(first, "bbb")
+	h.wantSlots(1, 0)
+	h.ok(h.eng.PRApproved(ctx(), "github", "", second, "sha-"+second, "rev"))
+	h.wantSlots(0, 1)
+	if it := h.item("I1"); it.Status != flow.ItemReleasing || !it.HoldsRelease {
+		t.Fatalf("item = %+v", it)
+	}
+}
+
+func TestANewHeadOnAReleasingItemFreesItsReleaseSlot(t *testing.T) {
+	h := newHarness(t, nil)
+	h.backlog(1)
+	h.approvedItem("I1", 1)
+	id := h.claimAndApprove()
+	h.wantSlots(0, 1)
+	h.newHead(id, "bbb")
+	h.wantSlots(1, 0)
+	if it := h.item("I1"); it.Status != flow.ItemExecuting || it.HoldsRelease {
+		t.Fatalf("item = %+v", it)
+	}
+	before, item, usage := h.slice(id), h.item("I1"), h.usage()
+	h.eng = h.reload()
+	if !reflect.DeepEqual(h.slice(id), before) || !reflect.DeepEqual(h.item("I1"), item) || !reflect.DeepEqual(h.usage(), usage) {
+		t.Fatal("replay changed the withdrawn slice, item or usage")
+	}
+	_, err := h.eng.ReleaseDone(ctx(), "pat", "", "I1")
+	wantCode(t, err, flow.CodeConflict)
+	h.reapprove(id, "bbb")
+	h.wantSlots(0, 1)
+	if it := h.item("I1"); it.Status != flow.ItemReleasing || !it.HoldsRelease {
+		t.Fatalf("item = %+v", it)
+	}
+}
+
+func TestANewHeadOnAnItemAwaitingReleaseLeavesReleaseAndKeepsReview(t *testing.T) {
+	h := newHarness(t, func(c *flow.Config) { c.Limits.Release = 1 })
+	h.backlog(2)
+	h.approvedItem("I1", 1)
+	h.approvedItem("I2", 1)
+	first, second := h.claimAndApprove(), h.claimAndApprove()
+	h.wantSlots(1, 1)
+	h.newHead(second, "bbb")
+	if it := h.item("I2"); it.Status != flow.ItemExecuting || it.HoldsRelease || !h.slice(second).HoldsReview {
+		t.Fatalf("item = %+v, slice = %+v", it, h.slice(second))
+	}
+	h.wantSlots(1, 1)
+	h.ok(h.eng.PRMerged(ctx(), "github", "", first, ""))
+	h.ok(h.eng.ReleaseDone(ctx(), "pat", "", "I1"))
+	h.wantSlots(1, 0)
+	if it := h.item("I2"); it.Status != flow.ItemExecuting {
+		t.Fatalf("item = %+v", it)
+	}
+	h.reapprove(second, "bbb")
+	h.wantSlots(0, 1)
+}
+
+func TestWithdrawingAnEarlierApprovalOfAnItemAwaitingReleaseMovesTheReviewSlot(t *testing.T) {
+	h := newHarness(t, func(c *flow.Config) { c.Limits.Release = 1 })
+	h.backlog(2)
+	h.approvedItem("I1", 1)
+	h.approvedItem("I2", 2)
+	h.claimAndApprove()
+	first, second := h.claimAndApprove(), h.claimAndApprove()
+	if h.slice(first).HoldsReview || !h.slice(second).HoldsReview {
+		t.Fatal("only the last approval should hold Review")
+	}
+	h.wantSlots(1, 1)
+	h.newHead(first, "bbb")
+	if sl := h.slice(second); sl.Status != flow.SliceApproved || sl.HoldsReview || !h.slice(first).HoldsReview {
+		t.Fatalf("Review did not move: first = %+v, second = %+v", h.slice(first), sl)
+	}
+	if it := h.item("I2"); it.Status != flow.ItemExecuting {
+		t.Fatalf("item = %+v", it)
+	}
+	h.wantSlots(1, 1)
+	h.reapprove(first, "bbb")
+	h.wantSlots(1, 1)
+	if it := h.item("I2"); it.Status != flow.ItemAwaitingRelease || !h.slice(first).HoldsReview {
+		t.Fatalf("item = %+v, slice = %+v", it, h.slice(first))
+	}
+}
+
+func TestWithdrawalMovesReviewFromAMergedSiblingAwaitingRelease(t *testing.T) {
+	for _, approveBeforeMerge := range []bool{false, true} {
+		t.Run(fmt.Sprintf("approve before merge %v", approveBeforeMerge), func(t *testing.T) {
+			h := newHarness(t, func(c *flow.Config) { c.Limits.Release = 1 })
+			h.backlog(2)
+			h.approvedItem("I1", 1)
+			h.approvedItem("I2", 2)
+			h.claimAndApprove()
+			first := h.claimAndApprove()
+			second := h.claim("laptop").SliceID
+			h.toReview(second)
+			if approveBeforeMerge {
+				h.ok(h.eng.PRApproved(ctx(), "github", "", second, "sha-"+second, "rev"))
+			}
+			h.ok(h.eng.PRMerged(ctx(), "github", "", second, "pat"))
+			if it := h.item("I2"); it.Status != flow.ItemAwaitingRelease {
+				t.Fatalf("item = %+v", it)
+			}
+			if sl := h.slice(second); sl.Status != flow.SliceMerged || !sl.HoldsReview || h.slice(first).HoldsReview {
+				t.Fatalf("merged sibling should hold Review: first = %+v, second = %+v", h.slice(first), sl)
+			}
+			h.wantSlots(1, 1)
+			h.newHead(first, "bbb")
+			h.wantSlots(1, 1)
+			if sl := h.slice(second); sl.Status != flow.SliceMerged || sl.HoldsReview || !h.slice(first).HoldsReview {
+				t.Fatalf("Review did not move: first = %+v, second = %+v", h.slice(first), sl)
+			}
+			if it := h.item("I2"); it.Status != flow.ItemExecuting || it.HoldsRelease {
+				t.Fatalf("item = %+v", it)
+			}
+			h.reapprove(first, "bbb")
+			h.wantSlots(1, 1)
+			if sl := h.slice(second); sl.Status != flow.SliceMerged || sl.HoldsReview || !h.slice(first).HoldsReview {
+				t.Fatalf("only the re-approved slice should hold Review: first = %+v, second = %+v", h.slice(first), sl)
+			}
+			if it := h.item("I2"); it.Status != flow.ItemAwaitingRelease || it.HoldsRelease {
+				t.Fatalf("item = %+v", it)
+			}
+		})
+	}
+}
+
+func TestAReleaseSlotFreedByAWithdrawalGoesToTheNextWaitingItem(t *testing.T) {
+	h := newHarness(t, func(c *flow.Config) { c.Limits.Release = 1 })
+	h.backlog(2)
+	h.approvedItem("I1", 1)
+	h.approvedItem("I2", 1)
+	first, second := h.claimAndApprove(), h.claimAndApprove()
+	h.newHead(first, "bbb")
+	h.wantSlots(1, 1)
+	if it := h.item("I2"); it.Status != flow.ItemReleasing || !it.HoldsRelease || h.slice(second).HoldsReview {
+		t.Fatalf("item = %+v, slice = %+v", it, h.slice(second))
+	}
+	if it := h.item("I1"); it.Status != flow.ItemExecuting || it.HoldsRelease {
+		t.Fatalf("item = %+v", it)
+	}
+	h.reapprove(first, "bbb")
+	h.wantSlots(1, 1)
+	if it := h.item("I1"); it.Status != flow.ItemAwaitingRelease || !h.slice(first).HoldsReview {
+		t.Fatalf("item = %+v, slice = %+v", it, h.slice(first))
+	}
+}
+
+func TestAWithdrawalRestoresReviewEvenOverTheLimit(t *testing.T) {
+	h := newHarness(t, func(c *flow.Config) { c.Limits.Review = 2 })
+	h.backlog(2)
+	h.approvedItem("I1", 2)
+	h.approvedItem("I2", 2)
+	first := h.claim("r1").SliceID
+	h.claim("r2")
+	h.toReview(first)
+	h.ok(h.eng.PRApproved(ctx(), "github", "", first, "sha-"+first, "rev"))
+	h.claim("r3")
+	h.wantSlots(2, 0)
+	h.newHead(first, "bbb")
+	h.wantSlots(3, 0)
+	if !h.slice(first).HoldsReview {
+		t.Fatal("withdrawn slice must hold Review even over the limit")
+	}
+	_, err := h.eng.Claim(ctx(), "r4", "", "r4", "")
+	wantCode(t, err, flow.CodeNoCapacity)
+	h.reapprove(first, "bbb")
+	h.wantSlots(2, 0)
+}
+
+func TestTheSameHeadOnAnApprovedSliceIsRefusedAndChangesNothing(t *testing.T) {
+	h := newHarness(t, nil)
+	h.backlog(1)
+	h.approvedItem("I1", 1)
+	id := h.claimAndApprove()
+	before, usage := h.slice(id), h.usage()
+	pr := *before.PR
+	before.PR = &pr
+	for _, number := range []int{10, 11} {
+		res, err := h.eng.PROpened(ctx(), "github", "", id, "acme/app", number, pr.HeadSHA)
+		wantCode(t, err, flow.CodeConflict)
+		if len(res.Events) != 0 || !reflect.DeepEqual(h.slice(id), before) || !reflect.DeepEqual(h.usage(), usage) {
+			t.Fatalf("same head changed approval or slots: %+v", res)
+		}
+	}
+}
+
+func TestAMergeAtAMovedHeadIsApprovedByWhoeverMerged(t *testing.T) {
+	h := newHarness(t, nil)
+	h.backlog(1)
+	h.approvedItem("I1", 1)
+	id := h.claimAndApprove()
+	h.newHead(id, "bbb")
+	res := h.ok(h.eng.PRMerged(ctx(), "github", "", id, "pat"))
+	if sl := h.slice(id); sl.Status != flow.SliceMerged || sl.PR.ApprovedSHA != "bbb" || sl.HoldsReview || sl.HoldsExecute {
+		t.Fatalf("merged slice = %+v, PR = %+v", sl, sl.PR)
+	}
+	if len(res.Events) != 4 || res.Events[1].Type != flow.EvPRApproved {
+		t.Fatalf("merge events = %+v", res.Events)
+	}
+	h.wantSlots(0, 1)
 }
 
 func TestRepeatedRequestIDIsIdempotent(t *testing.T) {
