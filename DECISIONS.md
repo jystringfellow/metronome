@@ -3,6 +3,26 @@
 This file records what has been decided about Metronome, what the review of SPEC.md found, and what is still
 open.
 
+## Decided (2026-11-27): the board page
+
+- Maintainer's decision: on 2026-11-27 the maintainer asked for a way to watch work being picked up and
+  worked on. `metronome serve` now serves a read-only board page at `/`, the first version of the proposed
+  web view, brought forward ahead of the reviewer and intake adapters.
+- Agent's decisions:
+  - Read only `GET /v1/board` and `GET /v1/events`, because they already carry the required data. The first
+    load reads the whole event log in pages to find the latest 30; subsequent reads are incremental. Verify
+    the last event's ID and sequence before continuing, because a replaced database can otherwise leave a
+    stale event history even when an incremental query returns no events.
+  - Refresh every five seconds and pause when the tab is hidden, because leases and polling move on minute
+    scales and the service is local.
+  - Hide done and dropped items and merged slices, with counts, to match `metronome board`.
+  - Compute lease time left against the service's clock using the HTTP `Date` header, so skewed viewer
+    clocks do not mislead.
+  - Embed separate scripts and styles and use a strict Content-Security-Policy (`default-src 'none'`,
+    `form-action 'none'`) to let the browser enforce the read-only, self-contained view.
+  - Link PRs only for validated `OWNER/NAME` repositories and positive PR numbers, so other repository
+    identifiers remain plain text rather than misleading links.
+
 ## Decided (2026-11-27): runner instructions
 
 - [docs/runners.md](docs/runners.md) is the guide for agents taking work from Metronome and people wiring
@@ -158,10 +178,11 @@ Recorded so the data model leaves room for it. Nothing here is in the proof of c
   - Monitor checks, marking each hypothesis written at plan time proved or not from real numbers. A breach opens
     a triage item or uses the expedite slot.
   - Intake, where the same signals rank the backlog.
-- **A read-only web view served by the Metronome binary,** built on the same HTTP API and event feed: each
-  workstream's board with stage columns and WIP counts, each person's inbox, and an item page with its evidence
-  timeline. Writes such as approving or answering an ask stay in the CLI and MCP server at first. Built after
-  the GitHub poller, the reviewer adapter and an intake adapter, when there is a live loop to watch.
+- **A read-only web view served by the Metronome binary,** built on the same HTTP API and event feed: the
+  first version (one board, open runs, open asks and recent events) was built on 2026-11-27 at the maintainer's
+  request. Per-workstream boards with stage columns and WIP counts, each person's inbox, an item page with
+  its evidence timeline and panels for signal adapters stay proposed. Writes such as approving or answering
+  an ask stay in the CLI and MCP server.
 
 ## Decided from the SPEC review (2026-11-26), now in SPEC.md
 
@@ -286,6 +307,10 @@ Choices made while building step 1 where SPEC.md was silent. Each is easy to cha
 
 Everything section 12 of SPEC.md marks Open or Unverified, plus:
 
+- 2026-11-27: the board page has no authentication, like the API it reads; keep it on the default loopback
+  address. How to protect the page and API when hosted with OIDC sign-in remains undecided.
+- 2026-11-27: whether to add a tail query to the events feed once logs grow, to avoid reading the whole log
+  on first load.
 - 2026-11-27: the runner brief does not include ask answers, rework status or the previous branch. How to
   include this context in the handoff to a runner resuming a slice is undecided.
 - 2026-11-27: terminal Ctrl-C signals the foreground process group, so the wrapped command may receive SIGINT
