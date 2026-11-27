@@ -97,6 +97,25 @@ These can wait:
 Wording: section 1's "one shared tracker" may read better as "one shared flow record", since Metronome owns flow
 state (slots, leases, flags, gate evidence) and not the backlog.
 
+## Proof-of-concept choices (2026-11-26), to confirm
+
+Choices made while building step 1 where SPEC.md was silent. Each is easy to change.
+
+- **Placeholder timings:** lease 15 minutes, stall timeout 2 hours, ask timeout 24 hours. All three are still
+  Open in SPEC.md section 12.
+- **Only Answer asks park on timeout.** SPEC.md section 5 has Plan approvals escalate, Review approvals reassign
+  and Verify asks keep the item red. Escalation and reassignment are not built yet, so those asks stay open past
+  their timeout.
+- **An answered ask leaves a slice stalled:** it keeps its slots, and the next claim resumes it.
+- **Abandoning a run (`drop`) leaves the slice stalled too,** per the decided waiting states.
+- **Claim order:** rework first, then slices already holding slots, then parked slices returned to the front, then
+  new slices by backlog rank.
+- **Moving into review needs green checks on the PR's head.** The per-approver cap is shown on the board but not
+  enforced, because a person can mark a PR ready on GitHub at any time.
+- **An approval must name the PR's current head SHA,** or it is refused as stale. What happens when an approved
+  PR's head changes is not built; it needs the merge decisions in findings 8 and 9.
+- **The expedite slot and untracked-PR adoption are not built yet.**
+
 ## Verified on the development machine
 
 - 2026-11-26: the `codex`, `copilot` and `agy` command-line tools are installed alongside Claude Code. Each one's
