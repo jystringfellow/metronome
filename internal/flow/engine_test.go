@@ -379,8 +379,8 @@ func TestApprovalOfTheLastPRTakesAReleaseSlot(t *testing.T) {
 	}
 	_, err := h.eng.ReleaseDone(ctx(), "pat", "", "I1")
 	wantCode(t, err, flow.CodeConflict)
-	h.ok(h.eng.PRMerged(ctx(), "github", "", a.SliceID))
-	h.ok(h.eng.PRMerged(ctx(), "github", "", b.SliceID))
+	h.ok(h.eng.PRMerged(ctx(), "github", "", a.SliceID, ""))
+	h.ok(h.eng.PRMerged(ctx(), "github", "", b.SliceID, ""))
 	h.ok(h.eng.ReleaseDone(ctx(), "pat", "", "I1"))
 	if it := h.item("I1"); it.Status != flow.ItemDone || it.HoldsRelease {
 		t.Fatalf("item = %+v, want done", it)
@@ -405,7 +405,7 @@ func TestFullReleaseBacksUpIntoReviewUntilASlotFrees(t *testing.T) {
 		t.Fatalf("second item = %s, slice holds review = %v; want awaiting release, holding Review",
 			waiting.Status, h.slice(second.SliceID).HoldsReview)
 	}
-	h.ok(h.eng.PRMerged(ctx(), "github", "", first.SliceID))
+	h.ok(h.eng.PRMerged(ctx(), "github", "", first.SliceID, ""))
 	h.ok(h.eng.ReleaseDone(ctx(), "pat", "", h.slice(first.SliceID).ItemID))
 	if it := h.item(waiting.ID); it.Status != flow.ItemReleasing || h.slice(second.SliceID).HoldsReview {
 		t.Fatalf("waiting item = %s after a Release slot freed, want releasing with Review freed", it.Status)
@@ -445,4 +445,50 @@ func TestStateIsRebuiltFromTheEventLog(t *testing.T) {
 	if next := h.claim("cloud"); next.RunID == c.RunID {
 		t.Fatal("run ids must keep counting after a replay")
 	}
+}
+
+func TestAMergeBeforeApprovalIsApprovedByWhoeverMerged(t *testing.T) {
+	for _, inReview := range []bool{false, true} {
+		t.Run(fmt.Sprintf("in review %v", inReview), func(t *testing.T) {
+			h := newHarness(t, nil)
+			h.backlog(1)
+			h.approvedItem("I1", 1)
+			c := h.claim("laptop")
+			if inReview {
+				h.toReview(c.SliceID)
+			} else {
+				h.ok(h.eng.Submit(ctx(), "runner", "", c.RunID, "metronome/"+c.SliceID))
+				h.ok(h.eng.PROpened(ctx(), "github", "", c.SliceID, "acme/app", 10, "sha-x"))
+			}
+			h.ok(h.eng.PRMerged(ctx(), "github", "", c.SliceID, "pat"))
+			sl := h.slice(c.SliceID)
+			if sl.Status != flow.SliceMerged || sl.PR.ApprovedSHA != sl.PR.HeadSHA || sl.HoldsExecute || sl.HoldsReview {
+				t.Fatalf("slice = %+v, want merged and approved at its head with no slots", sl)
+			}
+			if u := h.usage(); u.Execute != 0 || u.Review != 0 || u.Release != 1 {
+				t.Fatalf("usage = %+v, want only the Release slot held", u)
+			}
+		})
+	}
+}
+
+func TestAMergeBeforeApprovalNeedsTheMerger(t *testing.T) {
+	h := newHarness(t, nil)
+	h.backlog(1)
+	h.approvedItem("I1", 1)
+	c := h.claim("laptop")
+	h.toReview(c.SliceID)
+	_, err := h.eng.PRMerged(ctx(), "github", "", c.SliceID, "")
+	wantCode(t, err, flow.CodeInvalid)
+}
+
+func TestAMergeIsRefusedWhileTheSliceIsBeingReworked(t *testing.T) {
+	h := newHarness(t, nil)
+	h.backlog(1)
+	h.approvedItem("I1", 1)
+	c := h.claim("laptop")
+	h.toReview(c.SliceID)
+	h.ok(h.eng.PRChangesRequested(ctx(), "github", "", c.SliceID, "rev"))
+	_, err := h.eng.PRMerged(ctx(), "github", "", c.SliceID, "pat")
+	wantCode(t, err, flow.CodeConflict)
 }

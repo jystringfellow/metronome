@@ -36,6 +36,14 @@ func TestParsePRListPrefersTheOpenPRAndKeepsReviewCommits(t *testing.T) {
 	}
 }
 
+func TestParsePRListKeepsWhoMerged(t *testing.T) {
+	data := `[{"number":1,"headRefOid":"h","state":"MERGED","updatedAt":"2026-11-26T09:00:00Z","mergedBy":{"login":"pat","is_bot":false},"reviews":[],"statusCheckRollup":[]}]`
+	snap, err := ParsePRList("acme/app", []byte(data))
+	if err != nil || snap.MergedBy != "pat" {
+		t.Fatalf("snapshot = %+v, err = %v", snap, err)
+	}
+}
+
 func TestParsePRListWithNoPRs(t *testing.T) {
 	snap, err := ParsePRList("acme/app", []byte(`[]`))
 	if err != nil || snap != nil {

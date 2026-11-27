@@ -52,6 +52,7 @@ type Snapshot struct {
 	State      PRState
 	HeadChecks Checks
 	Reviews    []Review
+	MergedBy   string
 }
 
 type Source interface {
@@ -62,7 +63,7 @@ type GH struct {
 	Run func(ctx context.Context, args ...string) ([]byte, error)
 }
 
-const prFields = "number,headRefOid,isDraft,state,updatedAt,reviews,statusCheckRollup"
+const prFields = "number,headRefOid,isDraft,state,updatedAt,mergedBy,reviews,statusCheckRollup"
 
 func (g GH) PRForBranch(ctx context.Context, repo, branch string) (*Snapshot, error) {
 	run := g.Run
@@ -88,11 +89,12 @@ func runGH(ctx context.Context, args ...string) ([]byte, error) {
 }
 
 type ghPR struct {
-	Number     int       `json:"number"`
-	HeadRefOid string    `json:"headRefOid"`
-	IsDraft    bool      `json:"isDraft"`
-	State      PRState   `json:"state"`
-	UpdatedAt  time.Time `json:"updatedAt"`
+	Number     int                     `json:"number"`
+	HeadRefOid string                  `json:"headRefOid"`
+	IsDraft    bool                    `json:"isDraft"`
+	State      PRState                 `json:"state"`
+	UpdatedAt  time.Time               `json:"updatedAt"`
+	MergedBy   *struct{ Login string } `json:"mergedBy"`
 	Reviews    []struct {
 		ID          string                 `json:"id"`
 		Author      struct{ Login string } `json:"author"`
@@ -128,6 +130,9 @@ func ParsePRList(repo string, data []byte) (*Snapshot, error) {
 	})
 	p := prs[0]
 	snap := &Snapshot{Repo: repo, Number: p.Number, HeadSHA: p.HeadRefOid, Draft: p.IsDraft, State: p.State, HeadChecks: ChecksNone}
+	if p.MergedBy != nil {
+		snap.MergedBy = p.MergedBy.Login
+	}
 	for _, r := range p.Reviews {
 		id := r.ID
 		if id == "" {

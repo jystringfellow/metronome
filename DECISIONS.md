@@ -52,6 +52,19 @@ open.
 - **Every item carries its workstream and an optional source link from the start,** so pulling work between
   workstreams can be added later without migrating data.
 
+## Decided (2026-11-26): a merge before approval
+
+- **A merge counts as approval by whoever merged.** When a tracked PR merges while its slice is in `pr_open` or
+  `in_review`, Metronome records the slice as ready for review if it was not yet, approved at the merged head by
+  the user GitHub names as the merger, and then merged. Review and Release slots move exactly as for an approval
+  through review. Why: GitHub never lets a PR's author approve it, so a maintainer whose agents open PRs under
+  their own account, or a team that merges with admin rights, would otherwise leave slices holding Review slots
+  forever. Merging is already a deliberate human act, which section 1's "rules decide approvals" allows as the
+  rule.
+- **Not recorded:** a merge while the slice is being reworked (queued, running, flagged or stalled), and a merge
+  GitHub reports no merger for. The poller says so instead.
+- Proposed by the agent and accepted by the maintainer on 2026-11-26.
+
 ## Designed, not built: open workstreams and shared work (2026-11-26)
 
 Recorded so the data model leaves room for it. Nothing here is in the proof of concept.
@@ -194,10 +207,9 @@ Choices made while building step 1 where SPEC.md was silent. Each is easy to cha
 - **Checks:** only the latest run of each check on the head counts, and the worst of those decides. Skipped and
   neutral runs pass; cancelled runs fail. A head with no checks is never green, so a repository without CI keeps
   its slices out of review. A draft PR never moves into review.
-- **Reported, not recorded:** a PR closed without merging, a merge before Metronome recorded an approval, a head
-  that moves after approval, and a closed or merged PR on the branch that Metronome never recorded for the slice,
-  such as one left from an earlier use of the branch name. The engine has no rule for the merge and head cases
-  yet (findings 8 and 9).
+- **Reported, not recorded:** a PR closed without merging, a head that moves after approval, a merge while the
+  slice is being reworked, and a closed or merged PR on the branch that Metronome never recorded for the slice,
+  such as one left from an earlier use of the branch name. The engine has no rule for the head case yet.
 
 ## Verified on the development machine
 

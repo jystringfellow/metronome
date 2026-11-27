@@ -31,6 +31,10 @@ func (a Action) String() string {
 		return fmt.Sprintf("%s approved by %s at %s", r.SliceID, r.By, short(r.HeadSHA))
 	case "changes-requested":
 		return fmt.Sprintf("%s changes requested by %s", r.SliceID, r.By)
+	case "merged":
+		if r.By != "" {
+			return fmt.Sprintf("%s merged by %s, who approves it", r.SliceID, r.By)
+		}
 	}
 	return r.SliceID + " " + a.Event
 }
@@ -79,9 +83,19 @@ func Reconcile(sl flow.Slice, snap *Snapshot) (actions []Action, notes []string)
 		note("closed without merging; nothing recorded")
 		return actions, notes
 	case PRMerged:
-		if sl.Status == flow.SliceApproved {
+		switch sl.Status {
+		case flow.SliceApproved:
 			add("merged", "merged", api.GitHubRequest{SliceID: sl.ID})
-		} else {
+		case flow.SliceSubmitted, flow.SlicePROpen, flow.SliceInReview:
+			if snap.MergedBy == "" {
+				note("merged before approval, but GitHub does not say who merged it; nothing recorded")
+				return actions, notes
+			}
+			if sl.Status == flow.SliceSubmitted || sl.PR.HeadSHA != snap.HeadSHA {
+				add("pr-opened", fmt.Sprintf("opened:%s:v%d", snap.HeadSHA, sl.Version), base)
+			}
+			add("merged", "merged", api.GitHubRequest{SliceID: sl.ID, By: snap.MergedBy})
+		default:
 			note("merged while %s in Metronome; nothing recorded", sl.Status)
 		}
 		return actions, notes
