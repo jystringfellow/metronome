@@ -205,6 +205,45 @@ Recorded so the data model leaves room for it. Nothing here is in the proof of c
 - This branch lacks the main branch's claim brief, `metronome run`, runners guide and web board. On merge,
   carry `claim.workstream` from `flow.Claim` into the brief; carry `--workstream` into `next` and `run` and the
   runners guide (`docs/runners.md`); group the web board by workstream.
+  Also add `slice.dependencies: [{"slice_id":"I1.1","title":"schema","status":"merged"}]` to the brief,
+  resolving `after` against the board slices in listed order, and show `after: I1.1 (merged)` in the text
+  brief. Test dependency reporting by `next --json` and claim gating by `run` on merge. In `docs/runners.md`,
+  explain that a slice with unmerged dependencies is not offered; `next --slice` on one fails with a
+  conflict naming what it waits on; `no_work` may list waiting slices. Show `waits_on` on the web board.
+
+## Decided by the maintainer (2026-11-27): slices can depend on other slices
+
+- A proposed slice may list `after`, 1-based positions of slices of the same item that must merge first.
+  Refuse cycles, self references and out-of-range positions at proposal. Neither automatic nor explicit
+  claims (`next`, `next --slice`, `run`) may claim a waiting slice; an explicit claim names what it waits on.
+  The last dependency merge makes it claimable without further action. The board, board data and brief
+  show dependencies; existing event logs replay unchanged.
+
+## Agent decision (2026-11-27): implementing slice dependencies
+
+- Store `after` in the existing `plan_proposed` specs, resolve positions to slice IDs at `plan_approved`,
+  and derive `waits_on` by removing IDs on `pr_merged`. No new event is needed; old logs have no
+  dependencies. The board exposes both `after` and `waits_on`. Refuse duplicate positions rather than
+  silently normalise the authored plan.
+- Explicit waiting claims return `conflict` with each unmerged dependency's status. When no claim is
+  possible, `no_work` names waiting slices in the requested workstream (or all workstreams without a
+  filter), so a runner can see why. Existing capacity errors keep precedence.
+- An approved item or slice cannot be dropped by the current engine: `plan drop` is only for items still
+  planning. Dropping a plan therefore cannot strand a recorded dependent slice. A closed PR, or one
+  merged on GitHub but not recordable in Metronome (for example, during rework or with no named merger
+  when one is required), can still leave dependencies waiting. On each poll, report the waiting slices
+  alongside the dependency's PR and say a person must decide. Record no new event and do not release
+  dependencies on an unrecorded merge. This surfaces the blockage without treating incomplete work as clean.
+
+## Open (2026-11-27): slice dependencies follow-up
+
+- SPEC.md section 2.5 and finding 7 say an item's PRs merge together once all are approved. Ordered slices
+  require an earlier PR to merge before the dependent slice can be claimed. The engine already accepts
+  a merge of an approved slice before its siblings are approved, so ordered slices of a tier 2 or 3 item
+  merge one by one ahead of Release. Is that intended, or should dependent tiers be separate items?
+- Should dependencies be allowed across items, such as migration tiers planned as separate items?
+- Should there be a recorded slice drop or PR abandonment event? Should dependent slices be dropped,
+  released from the dependency, or raise an ask for the item owner?
 
 ## Proposed (2026-11-26), not decided
 
