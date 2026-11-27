@@ -49,6 +49,7 @@ func (a AskType) Valid() bool {
 }
 
 type Item struct {
+	Workstream    string      `json:"workstream"`
 	ID            string      `json:"id"`
 	Ref           string      `json:"ref"`
 	Title         string      `json:"title"`
@@ -89,6 +90,7 @@ type PR struct {
 }
 
 type Slice struct {
+	Workstream         string      `json:"workstream"`
 	ID                 string      `json:"id"`
 	ItemID             string      `json:"item_id"`
 	Seq                int         `json:"seq"`
@@ -191,10 +193,11 @@ type Flag struct {
 }
 
 type State struct {
-	Items  map[string]*Item  `json:"items"`
-	Slices map[string]*Slice `json:"slices"`
-	Runs   map[string]*Run   `json:"runs"`
-	Flags  map[string]*Flag  `json:"flags"`
+	Workstreams map[string]*Workstream `json:"workstreams"`
+	Items       map[string]*Item       `json:"items"`
+	Slices      map[string]*Slice      `json:"slices"`
+	Runs        map[string]*Run        `json:"runs"`
+	Flags       map[string]*Flag       `json:"flags"`
 
 	seen    map[string]struct{}
 	lastSeq int64
@@ -203,11 +206,12 @@ type State struct {
 
 func NewState() *State {
 	return &State{
-		Items:  map[string]*Item{},
-		Slices: map[string]*Slice{},
-		Runs:   map[string]*Run{},
-		Flags:  map[string]*Flag{},
-		seen:   map[string]struct{}{},
+		Workstreams: map[string]*Workstream{DefaultWorkstream: {Name: DefaultWorkstream, Limits: DefaultConfig().Limits.Stages()}},
+		Items:       map[string]*Item{},
+		Slices:      map[string]*Slice{},
+		Runs:        map[string]*Run{},
+		Flags:       map[string]*Flag{},
+		seen:        map[string]struct{}{},
 	}
 }
 
@@ -253,8 +257,15 @@ type Usage struct {
 }
 
 func (s *State) Usage() Usage {
+	return s.usage("")
+}
+
+func (s *State) usage(ws string) Usage {
 	u := Usage{PerApprover: map[string]int{}}
 	for _, it := range s.Items {
+		if ws != "" && it.Workstream != ws {
+			continue
+		}
 		if it.Status == ItemReady {
 			u.Ready++
 		}
@@ -266,6 +277,9 @@ func (s *State) Usage() Usage {
 		}
 	}
 	for _, sl := range s.Slices {
+		if ws != "" && sl.Workstream != ws {
+			continue
+		}
 		if sl.HoldsExecute {
 			u.Execute++
 		}
@@ -328,6 +342,9 @@ func (s *State) readyItemsByPriority() []*Item {
 		}
 	}
 	sort.Slice(out, func(i, j int) bool {
+		if out[i].Workstream != out[j].Workstream {
+			return out[i].Workstream < out[j].Workstream
+		}
 		if out[i].Front != out[j].Front {
 			return out[i].Front
 		}
@@ -335,6 +352,19 @@ func (s *State) readyItemsByPriority() []*Item {
 			return out[i].Rank < out[j].Rank
 		}
 		return out[i].ID < out[j].ID
+	})
+	positions := map[string]int{}
+	indices := map[string]int{}
+	for _, it := range out {
+		indices[it.ID] = positions[it.Workstream]
+		positions[it.Workstream]++
+	}
+	sort.Slice(out, func(i, j int) bool {
+		left, right := out[i], out[j]
+		if left.Front != right.Front {
+			return left.Front
+		}
+		return crossLess(indices[left.ID], indices[right.ID], left, right, left.ID, right.ID)
 	})
 	return out
 }
@@ -349,6 +379,9 @@ func (s *State) claimableByPriority() []*Slice {
 	held := func(sl *Slice) bool { return sl.HoldsExecute || sl.HoldsReview }
 	sort.Slice(out, func(i, j int) bool {
 		a, b := out[i], out[j]
+		if a.Workstream != b.Workstream {
+			return a.Workstream < b.Workstream
+		}
 		if a.Rework != b.Rework {
 			return a.Rework
 		}
@@ -367,5 +400,67 @@ func (s *State) claimableByPriority() []*Slice {
 		}
 		return a.Seq < b.Seq
 	})
+	positions := map[string]int{}
+	indices := map[string]int{}
+	for _, sl := range out {
+		indices[sl.ID] = positions[sl.Workstream]
+		positions[sl.Workstream]++
+	}
+	sort.Slice(out, func(i, j int) bool {
+		left, right := out[i], out[j]
+		if left.Rework != right.Rework {
+			return left.Rework
+		}
+		if held(left) != held(right) {
+			return held(left)
+		}
+		if left.Front != right.Front {
+			return left.Front
+		}
+		return crossLess(indices[left.ID], indices[right.ID], s.Items[left.ItemID], s.Items[right.ItemID], left.ID, right.ID)
+	})
+	return out
+}
+
+func crossLess(leftPosition, rightPosition int, left, right *Item, leftID, rightID string) bool {
+	if leftPosition != rightPosition {
+		return leftPosition < rightPosition
+	}
+	if !left.AddedAt.Equal(right.AddedAt) {
+		return left.AddedAt.Before(right.AddedAt)
+	}
+	if left.Workstream != right.Workstream {
+		return left.Workstream < right.Workstream
+	}
+	return leftID < rightID
+}
+
+const DefaultWorkstream = "default"
+
+type Workstream struct {
+	Name      string      `json:"name"`
+	Limits    StageLimits `json:"limits"`
+	CreatedAt time.Time   `json:"created_at,omitzero"`
+}
+
+type StageUsage = StageLimits
+
+func (s *State) StageUsage(ws string) StageUsage {
+	u := s.usage(ws)
+	return StageUsage{Ready: u.Ready, Plan: u.Plan, Execute: u.Execute, Review: u.Review, Release: u.Release}
+}
+
+type WorkstreamView struct {
+	Name   string      `json:"name"`
+	Limits StageLimits `json:"limits"`
+	Usage  StageUsage  `json:"usage"`
+}
+
+func (s *State) WorkstreamViews() []WorkstreamView {
+	out := make([]WorkstreamView, 0, len(s.Workstreams))
+	for name, ws := range s.Workstreams {
+		out = append(out, WorkstreamView{Name: name, Limits: ws.Limits, Usage: s.StageUsage(name)})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"sort"
 	"time"
 )
@@ -17,8 +18,63 @@ type BacklogItem struct {
 	PredictedTier int     `json:"predicted_tier"`
 }
 
-func (e *Engine) SyncBacklog(ctx context.Context, actor, requestID string, items []BacklogItem) (Result, error) {
+type workstreamLimits struct {
+	Workstream string      `json:"workstream"`
+	Limits     StageLimits `json:"limits"`
+}
+
+var workstreamName = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
+
+func (e *Engine) CreateWorkstream(ctx context.Context, actor, requestID, name string, limits PartialLimits) (Result, error) {
 	return e.execute(ctx, actor, requestID, func(d *decider) error {
+		if !workstreamName.MatchString(name) {
+			return fail(CodeInvalid, "invalid workstream name %q", name)
+		}
+		if d.s.Workstreams[name] != nil {
+			return fail(CodeConflict, "workstream %s already exists", name)
+		}
+		resolved, err := limits.merge(d.cfg.Limits.Stages())
+		if err != nil {
+			return err
+		}
+		d.emit(EvWorkstreamCreated, workstreamLimits{Workstream: name, Limits: resolved})
+		return nil
+	})
+}
+
+func (e *Engine) SetWorkstreamLimits(ctx context.Context, actor, requestID, name string, limits PartialLimits) (Result, error) {
+	return e.execute(ctx, actor, requestID, func(d *decider) error {
+		ws := d.s.Workstreams[name]
+		if ws == nil {
+			return errUnknown("workstream", name)
+		}
+		if limits == (PartialLimits{}) {
+			return fail(CodeInvalid, "give at least one limit")
+		}
+		resolved, err := limits.merge(ws.Limits)
+		if err != nil {
+			return err
+		}
+		if resolved == ws.Limits {
+			return nil
+		}
+		d.emit(EvWorkstreamLimitsSet, workstreamLimits{Workstream: name, Limits: resolved})
+		if resolved.Release > ws.Limits.Release {
+			d.fillReleaseSlots(name, resolved.Release-d.s.StageUsage(name).Release)
+		}
+		return nil
+	})
+}
+
+func (e *Engine) SyncBacklog(ctx context.Context, actor, requestID, workstream string, items []BacklogItem) (Result, error) {
+	return e.execute(ctx, actor, requestID, func(d *decider) error {
+		if workstream == "" {
+			workstream = DefaultWorkstream
+		}
+		ws := d.s.Workstreams[workstream]
+		if ws == nil {
+			return errUnknown("workstream", workstream)
+		}
 		known := map[string]bool{}
 		for _, it := range d.s.Items {
 			known[it.Ref] = true
@@ -31,12 +87,12 @@ func (e *Engine) SyncBacklog(ctx context.Context, actor, requestID string, items
 				return fail(CodeInvalid, "backlog item %q has tier %d, want 0 to 3", bi.Ref, bi.PredictedTier)
 			}
 		}
-		ready := d.s.Usage().Ready
+		ready := d.s.StageUsage(workstream).Ready
 		if ready >= d.cfg.Limits.ReadyRefillBelow {
 			return nil
 		}
 		for i, bi := range items {
-			if ready >= d.cfg.Limits.Ready {
+			if ready >= ws.Limits.Ready {
 				break
 			}
 			if known[bi.Ref] {
@@ -44,7 +100,8 @@ func (e *Engine) SyncBacklog(ctx context.Context, actor, requestID string, items
 			}
 			known[bi.Ref] = true
 			d.emit(EvItemAdded, itemAdded{
-				ItemID: d.nextItemID(), Ref: bi.Ref, Title: bi.Title, Intent: bi.Intent, Owner: bi.Owner,
+				Workstream: workstream,
+				ItemID:     d.nextItemID(), Ref: bi.Ref, Title: bi.Title, Intent: bi.Intent, Owner: bi.Owner,
 				Value: bi.Value, PredictedTier: bi.PredictedTier, Rank: i + 1,
 			})
 			ready++
@@ -53,25 +110,53 @@ func (e *Engine) SyncBacklog(ctx context.Context, actor, requestID string, items
 	})
 }
 
-func (e *Engine) StartPlan(ctx context.Context, actor, requestID, itemID string) (Result, error) {
+func (e *Engine) StartPlan(ctx context.Context, actor, requestID, workstream, itemID string) (Result, error) {
 	return e.execute(ctx, actor, requestID, func(d *decider) error {
-		if d.s.Usage().Plan >= d.cfg.Limits.Plan {
-			return fail(CodeNoCapacity, "Plan is at its limit of %d", d.cfg.Limits.Plan)
+		if workstream != "" && d.s.Workstreams[workstream] == nil {
+			return errUnknown("workstream", workstream)
+		}
+		fits := func(it *Item) error {
+			lim := d.s.Workstreams[it.Workstream].Limits.Plan
+			if d.s.StageUsage(it.Workstream).Plan >= lim {
+				return fail(CodeNoCapacity, "Plan in workstream %s is at its limit of %d", it.Workstream, lim)
+			}
+			return nil
 		}
 		var it *Item
 		if itemID == "" {
-			ready := d.s.readyItemsByPriority()
-			if len(ready) == 0 {
+			var firstErr error
+			for _, candidate := range d.s.readyItemsByPriority() {
+				if workstream != "" && candidate.Workstream != workstream {
+					continue
+				}
+				if err := fits(candidate); err != nil {
+					if firstErr == nil {
+						firstErr = err
+					}
+					continue
+				}
+				it = candidate
+				break
+			}
+			if it == nil {
+				if firstErr != nil {
+					return firstErr
+				}
 				return fail(CodeNoWork, "no ready items")
 			}
-			it = ready[0]
 		} else {
 			it = d.s.Items[itemID]
 			if it == nil {
 				return errUnknown("item", itemID)
 			}
+			if workstream != "" && it.Workstream != workstream {
+				return fail(CodeConflict, "item %s is in workstream %s, not %s", it.ID, it.Workstream, workstream)
+			}
 			if it.Status != ItemReady {
 				return fail(CodeConflict, "item %s is %s, not ready", it.ID, it.Status)
+			}
+			if err := fits(it); err != nil {
+				return err
 			}
 		}
 		d.emit(EvPlanStarted, itemRef{ItemID: it.ID})
@@ -196,6 +281,7 @@ func (e *Engine) ResolveFlag(ctx context.Context, actor, requestID, flagID, answ
 }
 
 type Claim struct {
+	Workstream string    `json:"workstream"`
 	RunID      string    `json:"run_id"`
 	SliceID    string    `json:"slice_id"`
 	LeaseUntil time.Time `json:"lease_until"`
@@ -206,26 +292,32 @@ func ClaimFrom(r Result) (Claim, bool) {
 		if ev.Type == EvSliceClaimed {
 			var p sliceClaimed
 			if err := json.Unmarshal(ev.Data, &p); err == nil {
-				return Claim{RunID: p.RunID, SliceID: p.SliceID, LeaseUntil: p.LeaseUntil}, true
+				if p.Workstream == "" {
+					p.Workstream = DefaultWorkstream
+				}
+				return Claim{RunID: p.RunID, SliceID: p.SliceID, LeaseUntil: p.LeaseUntil, Workstream: p.Workstream}, true
 			}
 		}
 	}
 	return Claim{}, false
 }
 
-func (e *Engine) Claim(ctx context.Context, actor, requestID, runnerID, sliceID string) (Result, error) {
+func (e *Engine) Claim(ctx context.Context, actor, requestID, runnerID, workstream, sliceID string) (Result, error) {
 	return e.execute(ctx, actor, requestID, func(d *decider) error {
 		if runnerID == "" {
 			return fail(CodeInvalid, "a claim needs a runner id")
 		}
-		u := d.s.Usage()
-		lim := d.cfg.Limits
+		if workstream != "" && d.s.Workstreams[workstream] == nil {
+			return errUnknown("workstream", workstream)
+		}
 		fits := func(sl *Slice) error {
+			u := d.s.StageUsage(sl.Workstream)
+			lim := d.s.Workstreams[sl.Workstream].Limits
 			if !sl.HoldsExecute && u.Execute >= lim.Execute {
-				return fail(CodeNoCapacity, "Execute is at its limit of %d", lim.Execute)
+				return fail(CodeNoCapacity, "Execute in workstream %s is at its limit of %d", sl.Workstream, lim.Execute)
 			}
 			if !sl.HoldsReview && u.Review >= lim.Review {
-				return fail(CodeNoCapacity, "Review is at its limit of %d, counting reservations", lim.Review)
+				return fail(CodeNoCapacity, "Review in workstream %s is at its limit of %d, counting reservations", sl.Workstream, lim.Review)
 			}
 			return nil
 		}
@@ -234,6 +326,9 @@ func (e *Engine) Claim(ctx context.Context, actor, requestID, runnerID, sliceID 
 			chosen = d.s.Slices[sliceID]
 			if chosen == nil {
 				return errUnknown("slice", sliceID)
+			}
+			if workstream != "" && chosen.Workstream != workstream {
+				return fail(CodeConflict, "slice %s is in workstream %s, not %s", chosen.ID, chosen.Workstream, workstream)
 			}
 			if !chosen.claimable() {
 				return fail(CodeConflict, "slice %s is %s, not claimable", chosen.ID, chosen.Status)
@@ -248,6 +343,9 @@ func (e *Engine) Claim(ctx context.Context, actor, requestID, runnerID, sliceID 
 			}
 			var firstErr error
 			for _, sl := range candidates {
+				if workstream != "" && sl.Workstream != workstream {
+					continue
+				}
 				err := fits(sl)
 				if err == nil {
 					chosen = sl
@@ -258,11 +356,15 @@ func (e *Engine) Claim(ctx context.Context, actor, requestID, runnerID, sliceID 
 				}
 			}
 			if chosen == nil {
+				if firstErr == nil {
+					return fail(CodeNoWork, "no claimable slices")
+				}
 				return firstErr
 			}
 		}
 		d.emit(EvSliceClaimed, sliceClaimed{
-			RunID: d.nextRunID(), SliceID: chosen.ID, RunnerID: runnerID,
+			Workstream: chosen.Workstream,
+			RunID:      d.nextRunID(), SliceID: chosen.ID, RunnerID: runnerID,
 			LeaseUntil: d.now.Add(d.cfg.Lease), TakesExecute: !chosen.HoldsExecute, TakesReview: !chosen.HoldsReview,
 		})
 		return nil
@@ -346,7 +448,7 @@ func (e *Engine) PROpened(ctx context.Context, actor, requestID, sliceID, repo s
 		if sl.Status == SliceApproved {
 			d.emit(EvApprovalWithdrawn, approvalWithdrawn{SliceID: sl.ID, WithdrawnSHA: sl.PR.ApprovedSHA, HeadSHA: headSHA})
 			if d.s.Items[sl.ItemID].Status == ItemReleasing {
-				d.fillReleaseSlot()
+				d.fillReleaseSlot(sl.Workstream)
 			}
 		}
 		return nil
@@ -469,15 +571,19 @@ func (e *Engine) ReleaseDone(ctx context.Context, actor, requestID, itemID strin
 			}
 		}
 		d.emit(EvReleaseDone, itemRef{ItemID: it.ID})
-		d.fillReleaseSlot()
+		d.fillReleaseSlot(it.Workstream)
 		return nil
 	})
 }
 
-func (d *decider) fillReleaseSlot() {
+func (d *decider) fillReleaseSlot(ws string) {
+	d.fillReleaseSlots(ws, d.s.Workstreams[ws].Limits.Release-d.s.StageUsage(ws).Release+1)
+}
+
+func (d *decider) fillReleaseSlots(ws string, free int) {
 	var waiting []*Item
 	for _, w := range d.s.Items {
-		if w.Status == ItemAwaitingRelease {
+		if w.Status == ItemAwaitingRelease && w.Workstream == ws {
 			waiting = append(waiting, w)
 		}
 	}
@@ -488,7 +594,12 @@ func (d *decider) fillReleaseSlot() {
 			}
 			return waiting[i].ID < waiting[j].ID
 		})
-		d.emit(EvReleaseSlotTaken, itemRef{ItemID: waiting[0].ID})
+		for i, item := range waiting {
+			if i >= free {
+				break
+			}
+			d.emit(EvReleaseSlotTaken, itemRef{ItemID: item.ID})
+		}
 	}
 }
 
@@ -504,7 +615,7 @@ func (d *decider) approve(sl *Slice, headSHA, by string) {
 		d.emit(EvPRApproved, prApproved{SliceID: sl.ID, HeadSHA: headSHA, By: by})
 	case !d.s.Items[sl.ItemID].needsRelease():
 		d.emit(EvPRApproved, prApproved{SliceID: sl.ID, HeadSHA: headSHA, By: by, KeepsReview: true})
-	case d.s.Usage().Release < d.cfg.Limits.Release:
+	case d.s.StageUsage(sl.Workstream).Release < d.s.Workstreams[sl.Workstream].Limits.Release:
 		d.emit(EvPRApproved, prApproved{SliceID: sl.ID, HeadSHA: headSHA, By: by, KeepsReview: true})
 		d.emit(EvReleaseSlotTaken, itemRef{ItemID: sl.ItemID})
 	default:

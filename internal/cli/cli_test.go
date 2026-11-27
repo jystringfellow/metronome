@@ -87,6 +87,47 @@ func (e *env) board() api.Board {
 	return b
 }
 
+func TestWorkstreamsFromCommandLine(t *testing.T) {
+	e := newEnv(t)
+	e.ok("pat", "workstream", "create", "acme", "--execute", "0")
+	if out := e.ok("pat", "workstream", "list"); !strings.Contains(out, "0/0") || !strings.Contains(out, "default") {
+		t.Fatal(out)
+	}
+	e.ok("pat", "workstream", "set", "acme", "--execute", "2")
+	var views []flow.WorkstreamView
+	if err := json.Unmarshal([]byte(e.ok("pat", "workstream", "list", "--json")), &views); err != nil || len(views) != 2 || views[0].Name != "acme" || views[0].Limits.Execute != 2 {
+		t.Fatalf("views = %+v, err = %v", views, err)
+	}
+	if out, code := e.run("pat", "workstream", "set", "acme"); code != 2 {
+		t.Fatal(out, code)
+	}
+	if out, code := e.run("pat", "workstream", "set", "missing", "--execute", "2"); code != 1 || !strings.Contains(out, "not_found") {
+		t.Fatal(out, code)
+	}
+	for _, ws := range []string{"acme", "default"} {
+		file := e.file(ws+".json", api.BacklogRequest{Items: []flow.BacklogItem{{Ref: ws, Title: ws + " item", Owner: "pat"}}})
+		if ws == "default" {
+			e.ok("pat", "backlog", "sync", file)
+		} else {
+			e.ok("pat", "backlog", "sync", "--workstream", ws, file)
+		}
+	}
+	e.ok("pat", "plan", "start", "--workstream", "acme")
+	slices := e.file("slices.json", []flow.SliceSpec{{Title: "example", Repo: "acme/app", Approvers: []string{"rev"}}})
+	e.ok("pat", "plan", "propose", "I1", "--slices", slices)
+	e.ok("pat", "plan", "approve", "I1")
+	if out := e.ok("pat", "next", "--runner", "laptop", "--workstream", "acme"); !strings.Contains(out, "workstream: acme") {
+		t.Fatal(out)
+	}
+	var board api.Board
+	if err := json.Unmarshal([]byte(e.ok("pat", "board", "--workstream", "acme", "--json")), &board); err != nil || len(board.Items) != 1 || board.Items[0].Workstream != "acme" || len(board.Slices) != 1 || board.Slices[0].Workstream != "acme" || len(board.Workstreams) != 1 || len(board.Runs) != 1 {
+		t.Fatalf("board = %+v, err = %v", board, err)
+	}
+	if out := e.ok("pat", "board"); !strings.Contains(out, "workstream acme") || !strings.Contains(out, "workstream default") || !strings.Contains(out, "default item") {
+		t.Fatal(out)
+	}
+}
+
 func (e *env) approvedItem(item flow.BacklogItem, slices []flow.SliceSpec) {
 	e.t.Helper()
 	e.ok("pat", "backlog", "sync", e.file("backlog.json", api.BacklogRequest{Items: []flow.BacklogItem{item}}))
@@ -172,7 +213,7 @@ func TestNextJSONPrintsTheBrief(t *testing.T) {
 		t.Fatalf("lease_until = %q, want a future UTC timestamp", lease)
 	}
 	want := map[string]map[string]any{
-		"claim":   {"run_id": "R1", "slice_id": "I1.1", "lease_until": lease},
+		"claim":   {"workstream": "default", "run_id": "R1", "slice_id": "I1.1", "lease_until": lease},
 		"slice":   {"id": "I1.1", "repo": "acme/app", "title": "API endpoint", "criteria": []any{"GET /export returns CSV", "An empty account exports a header row\nNo data rows"}, "approvers": []any{"rev", "sam"}},
 		"item":    {"id": "I1", "ref": "ACME-1", "title": "Add export", "intent": "Let customers download their data\nInclude all records"},
 		"history": emptyHistory(),
@@ -182,7 +223,7 @@ func TestNextJSONPrintsTheBrief(t *testing.T) {
 	}
 	out = e.ok("laptop", "next", "--runner", "laptop", "--slice", "I1.2", "--json")
 	brief = decodeBrief(t, out)
-	want["claim"] = map[string]any{"run_id": "R2", "slice_id": "I1.2", "lease_until": brief["claim"]["lease_until"]}
+	want["claim"] = map[string]any{"workstream": "default", "run_id": "R2", "slice_id": "I1.2", "lease_until": brief["claim"]["lease_until"]}
 	want["slice"] = map[string]any{"id": "I1.2", "repo": "acme/docs", "title": "Docs", "criteria": []any{}, "approvers": []any{}}
 	if !reflect.DeepEqual(brief, want) || !strings.Contains(out, `"approvers": []`) {
 		t.Fatalf("second brief = %s, want %#v", out, want)

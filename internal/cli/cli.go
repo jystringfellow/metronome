@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strings"
@@ -31,20 +32,25 @@ Service:
   serve [--addr 127.0.0.1:7340] [--db metronome.db] [--tick 30s]  also serves a read-only board page at /
 
 Looking:
-  board [--json]                  limits, usage, items, slices, open runs and asks
+  board [--workstream NAME] [--json]  limits, usage, items, slices, open runs and asks
   inbox OWNER                     open asks for one person, oldest first
   events [--after SEQ]            the event log
 
+Workstreams:
+  workstream create NAME [--ready N --plan N --execute N --review N --release N]
+  workstream set NAME --LIMIT N    change one or more stage limits
+  workstream list [--json]        limits and usage per workstream
+
 Backlog and plan:
-  backlog sync FILE               add ranked items from a JSON backlog file
-  plan start [ITEM]               pull the top ready item (or ITEM) into Plan
+  backlog sync [--workstream NAME] FILE  add ranked items (default workstream if omitted)
+  plan start [--workstream NAME] [ITEM]  pull the top ready item with capacity
   plan propose ITEM --slices FILE [--approver WHO]
   plan approve ITEM [--tier N]
   plan drop ITEM
 
 Runners (the connector operations):
-  next --runner ID [--slice S] [--json]  claim the next slice and print its brief (next_work)
-  run --runner ID [--slice S] [--every 5m] -- CMD [ARGS...]  claim, run CMD with its brief, renew, submit or drop
+  next --runner ID [--workstream NAME] [--slice S] [--json]  claim the next slice and print its brief (next_work)
+  run --runner ID [--workstream NAME] [--slice S] [--every 5m] -- CMD [ARGS...]  claim, run CMD with its brief, renew, submit or drop
   report RUN [--note TEXT]        renew the lease (heartbeat)
   ask (--run R | --item I | --slice S) --type ASK --question TEXT [--owner WHO]
   submit RUN --branch BRANCH      the work will arrive on BRANCH
@@ -159,6 +165,8 @@ func (a *app) dispatch(ctx context.Context, cmd string, args []string) error {
 		return a.events(ctx, args)
 	case "backlog":
 		return a.backlog(ctx, args)
+	case "workstream":
+		return a.workstream(ctx, args)
 	case "plan":
 		return a.plan(ctx, args)
 	case "next":
@@ -241,44 +249,57 @@ func (a *app) serve(ctx context.Context, args []string) error {
 
 func (a *app) board(ctx context.Context, args []string) error {
 	fs := newFlags("board")
+	ws := fs.String("workstream", "", "")
 	asJSON := fs.Bool("json", false, "")
 	if err := parse(fs, args, 0); err != nil {
 		return err
 	}
 	var b api.Board
-	if err := a.client.Get(ctx, "/v1/board", &b); err != nil {
+	if err := a.client.Get(ctx, "/v1/board?workstream="+url.QueryEscape(*ws), &b); err != nil {
 		return err
 	}
 	if *asJSON {
 		return writeJSON(a.out, b)
 	}
 	l, u := b.Limits, b.Usage
-	fmt.Fprintf(a.out, "ready %d/%d  plan %d/%d  execute %d/%d  review %d/%d  release %d/%d\n",
-		u.Ready, l.Ready, u.Plan, l.Plan, u.Execute, l.Execute, u.Review, l.Review, u.Release, l.Release)
 	for who, n := range u.PerApprover {
 		if n > l.PerApprover {
 			fmt.Fprintf(a.out, "approver %s has %d PRs in review, over the cap of %d\n", who, n, l.PerApprover)
 		}
 	}
+	for _, ws := range b.Workstreams {
+		l, u := ws.Limits, ws.Usage
+		fmt.Fprintf(a.out, "workstream %s  ready %d/%d  plan %d/%d  execute %d/%d  review %d/%d  release %d/%d\n", ws.Name, u.Ready, l.Ready, u.Plan, l.Plan, u.Execute, l.Execute, u.Review, l.Review, u.Release, l.Release)
+		tw := tabwriter.NewWriter(a.out, 0, 2, 2, ' ', 0)
+		fmt.Fprintln(tw, "\nITEM\tSTATUS\tTIER\tOWNER\tTITLE")
+		for _, it := range b.Items {
+			if it.Workstream != ws.Name {
+				continue
+			}
+			if it.Status == flow.ItemDone || it.Status == flow.ItemDropped {
+				continue
+			}
+			fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%s\n", it.ID, it.Status, it.PredictedTier, it.Owner, it.Title)
+		}
+		fmt.Fprintln(tw, "\nSLICE\tSTATUS\tSLOTS\tRUN\tPR\tTITLE")
+		for _, sl := range b.Slices {
+			if sl.Workstream != ws.Name {
+				continue
+			}
+			if sl.Status == flow.SliceMerged {
+				continue
+			}
+			pr := "-"
+			if sl.PR != nil {
+				pr = fmt.Sprintf("%s#%d", sl.PR.Repo, sl.PR.Number)
+			}
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", sl.ID, sliceStatus(sl), slots(sl), dash(sl.RunID), pr, sl.Title)
+		}
+		if err := tw.Flush(); err != nil {
+			return err
+		}
+	}
 	tw := tabwriter.NewWriter(a.out, 0, 2, 2, ' ', 0)
-	fmt.Fprintln(tw, "\nITEM\tSTATUS\tTIER\tOWNER\tTITLE")
-	for _, it := range b.Items {
-		if it.Status == flow.ItemDone || it.Status == flow.ItemDropped {
-			continue
-		}
-		fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%s\n", it.ID, it.Status, it.PredictedTier, it.Owner, it.Title)
-	}
-	fmt.Fprintln(tw, "\nSLICE\tSTATUS\tSLOTS\tRUN\tPR\tTITLE")
-	for _, sl := range b.Slices {
-		if sl.Status == flow.SliceMerged {
-			continue
-		}
-		pr := "-"
-		if sl.PR != nil {
-			pr = fmt.Sprintf("%s#%d", sl.PR.Repo, sl.PR.Number)
-		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", sl.ID, sliceStatus(sl), slots(sl), dash(sl.RunID), pr, sl.Title)
-	}
 	if len(b.Flags) > 0 {
 		fmt.Fprintln(tw, "\nASK\tTYPE\tOWNER\tON\tWAITING\tQUESTION")
 		for _, f := range b.Flags {
@@ -354,12 +375,23 @@ func (a *app) events(ctx context.Context, args []string) error {
 }
 
 func (a *app) backlog(ctx context.Context, args []string) error {
-	if len(args) != 2 || args[0] != "sync" {
-		return usagef("usage: backlog sync FILE")
+	if len(args) == 0 || args[0] != "sync" {
+		return usagef("usage: backlog sync [--workstream NAME] FILE")
+	}
+	fs := newFlags("backlog sync")
+	ws := fs.String("workstream", "", "")
+	if err := parse(fs, args[1:], 1); err != nil {
+		return err
 	}
 	var req api.BacklogRequest
-	if err := readJSON(args[1], &req); err != nil {
+	if err := readJSON(fs.Arg(0), &req); err != nil {
 		return err
+	}
+	if *ws != "" {
+		if req.Workstream != "" && req.Workstream != *ws {
+			return usagef("workstream flag and file disagree")
+		}
+		req.Workstream = *ws
 	}
 	return a.post(ctx, "/v1/backlog/sync", req)
 }
@@ -372,13 +404,11 @@ func (a *app) plan(ctx context.Context, args []string) error {
 	switch sub {
 	case "start":
 		fs := newFlags("plan start")
-		if err := fs.Parse(args); err != nil {
-			return usagef("%v", err)
+		ws := fs.String("workstream", "", "")
+		if err := parse(fs, args, -1); err != nil {
+			return err
 		}
-		if fs.NArg() > 1 {
-			return usagef("usage: plan start [ITEM]")
-		}
-		return a.post(ctx, "/v1/plan/start", api.PlanStartRequest{ItemID: fs.Arg(0)})
+		return a.post(ctx, "/v1/plan/start", api.PlanStartRequest{ItemID: fs.Arg(0), Workstream: *ws})
 	case "propose":
 		fs := newFlags("plan propose")
 		file := fs.String("slices", "", "")
@@ -415,6 +445,7 @@ func (a *app) next(ctx context.Context, args []string) error {
 	fs := newFlags("next")
 	runner := fs.String("runner", "", "")
 	slice := fs.String("slice", "", "")
+	ws := fs.String("workstream", "", "")
 	asJSON := fs.Bool("json", false, "")
 	if err := parse(fs, args, 0); err != nil {
 		return err
@@ -422,7 +453,7 @@ func (a *app) next(ctx context.Context, args []string) error {
 	if *runner == "" {
 		return usagef("--runner ID is required")
 	}
-	b, err := a.claim(ctx, *runner, *slice)
+	b, err := a.claim(ctx, *runner, *slice, *ws)
 	if err != nil {
 		return err
 	}
@@ -432,9 +463,9 @@ func (a *app) next(ctx context.Context, args []string) error {
 	return b.writeText(a.out)
 }
 
-func (a *app) claim(ctx context.Context, runner, slice string) (brief, error) {
+func (a *app) claim(ctx context.Context, runner, slice, workstream string) (brief, error) {
 	var res flow.Result
-	if err := a.client.Post(ctx, "/v1/claims", a.requestID, api.ClaimRequest{RunnerID: runner, SliceID: slice}, &res); err != nil {
+	if err := a.client.Post(ctx, "/v1/claims", a.requestID, api.ClaimRequest{RunnerID: runner, SliceID: slice, Workstream: workstream}, &res); err != nil {
 		return brief{}, err
 	}
 	c, ok := flow.ClaimFrom(res)
@@ -443,7 +474,7 @@ func (a *app) claim(ctx context.Context, runner, slice string) (brief, error) {
 	}
 	b, err := a.readBrief(ctx, c)
 	if err != nil {
-		return brief{Claim: briefClaim{RunID: c.RunID, SliceID: c.SliceID, LeaseUntil: c.LeaseUntil.UTC()}}, fmt.Errorf("run %s claimed slice %s, but its brief could not be read: %w", c.RunID, c.SliceID, err)
+		return brief{Claim: briefClaim{Workstream: c.Workstream, RunID: c.RunID, SliceID: c.SliceID, LeaseUntil: c.LeaseUntil.UTC()}}, fmt.Errorf("run %s claimed slice %s, but its brief could not be read: %w", c.RunID, c.SliceID, err)
 	}
 	return b, nil
 }
@@ -456,6 +487,7 @@ type brief struct {
 }
 
 type briefClaim struct {
+	Workstream string    `json:"workstream"`
 	RunID      string    `json:"run_id"`
 	SliceID    string    `json:"slice_id"`
 	LeaseUntil time.Time `json:"lease_until"`
@@ -535,7 +567,7 @@ func (a *app) readBrief(ctx context.Context, c flow.Claim) (brief, error) {
 					return brief{}, err
 				}
 				return brief{
-					Claim: briefClaim{RunID: c.RunID, SliceID: c.SliceID, LeaseUntil: c.LeaseUntil.UTC()},
+					Claim: briefClaim{Workstream: c.Workstream, RunID: c.RunID, SliceID: c.SliceID, LeaseUntil: c.LeaseUntil.UTC()},
 					Slice: briefSlice{ID: sl.ID, Repo: sl.Repo, Title: sl.Title,
 						Criteria: append([]string{}, sl.Criteria...), Approvers: append([]string{}, sl.Approvers...)},
 					Item:    briefItem{ID: it.ID, Ref: it.Ref, Title: it.Title, Intent: it.Intent},
@@ -551,6 +583,7 @@ func (a *app) readBrief(ctx context.Context, c flow.Claim) (brief, error) {
 func (b brief) writeText(w io.Writer) error {
 	var text strings.Builder
 	fmt.Fprintf(&text, "run %s claimed slice %s; lease until %s\n", b.Claim.RunID, b.Claim.SliceID, b.Claim.LeaseUntil.Local().Format(time.Kitchen))
+	fmt.Fprintf(&text, "workstream: %s\n", b.Claim.Workstream)
 	fmt.Fprintf(&text, "slice:     %s %s\nrepo:      %s\n", b.Slice.ID, b.Slice.Title, b.Slice.Repo)
 	fmt.Fprintf(&text, "item:      %s %s (%s)\n", b.Item.Ref, b.Item.Title, b.Item.ID)
 	intent := b.Item.Intent
@@ -788,6 +821,54 @@ func (a *app) post(ctx context.Context, path string, body any) error {
 	return nil
 }
 
+func (a *app) workstream(ctx context.Context, args []string) error {
+	if len(args) == 0 {
+		return usagef("usage: workstream create|set|list")
+	}
+	sub := args[0]
+	fs := newFlags("workstream " + sub)
+	if sub == "list" {
+		asJSON := fs.Bool("json", false, "")
+		if err := parse(fs, args[1:], 0); err != nil {
+			return err
+		}
+		var views []flow.WorkstreamView
+		if err := a.client.Get(ctx, "/v1/workstreams", &views); err != nil {
+			return err
+		}
+		if *asJSON {
+			return writeJSON(a.out, views)
+		}
+		tw := tabwriter.NewWriter(a.out, 0, 2, 2, ' ', 0)
+		fmt.Fprintln(tw, "WORKSTREAM\tREADY\tPLAN\tEXECUTE\tREVIEW\tRELEASE")
+		for _, ws := range views {
+			l, u := ws.Limits, ws.Usage
+			fmt.Fprintf(tw, "%s\t%d/%d\t%d/%d\t%d/%d\t%d/%d\t%d/%d\n", ws.Name, u.Ready, l.Ready, u.Plan, l.Plan, u.Execute, l.Execute, u.Review, l.Review, u.Release, l.Release)
+		}
+		return tw.Flush()
+	}
+	if sub != "create" && sub != "set" {
+		return usagef("usage: workstream create|set|list")
+	}
+	var p flow.PartialLimits
+	values := map[string]**int{"ready": &p.Ready, "plan": &p.Plan, "execute": &p.Execute, "review": &p.Review, "release": &p.Release}
+	flags := map[string]*int{}
+	for name := range values {
+		flags[name] = fs.Int(name, -1, "")
+	}
+	if err := parse(fs, args[1:], 1); err != nil {
+		return err
+	}
+	fs.Visit(func(f *flag.Flag) { *values[f.Name] = flags[f.Name] })
+	if sub == "create" {
+		return a.post(ctx, "/v1/workstreams", api.WorkstreamCreateRequest{Name: fs.Arg(0), PartialLimits: p})
+	}
+	if p == (flow.PartialLimits{}) {
+		return usagef("give at least one limit")
+	}
+	return a.post(ctx, "/v1/workstreams/"+url.PathEscape(fs.Arg(0))+"/limits", p)
+}
+
 func newFlags(name string) *flag.FlagSet {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -806,7 +887,10 @@ func parse(fs *flag.FlagSet, args []string, positional int) error {
 			args = args[1:]
 		}
 	}
-	if len(pos) != positional {
+	if positional == -1 && len(pos) > 1 {
+		return usagef("want at most one argument")
+	}
+	if positional >= 0 && len(pos) != positional {
 		return usagef("want %d argument(s), got %d; run metronome help", positional, len(pos))
 	}
 	return fs.Parse(pos)

@@ -16,30 +16,32 @@ type Event struct {
 }
 
 const (
-	EvItemAdded          = "item_added"
-	EvPlanStarted        = "plan_started"
-	EvPlanProposed       = "plan_proposed"
-	EvPlanApproved       = "plan_approved"
-	EvPlanDropped        = "plan_dropped"
-	EvItemParked         = "item_parked"
-	EvFlagRaised         = "flag_raised"
-	EvFlagResolved       = "flag_resolved"
-	EvFlagTimedOut       = "flag_timed_out"
-	EvSliceClaimed       = "slice_claimed"
-	EvHeartbeat          = "heartbeat"
-	EvRunClosed          = "run_closed"
-	EvSliceParked        = "slice_parked"
-	EvPROpened           = "pr_opened"
-	EvChecksCompleted    = "checks_completed"
-	EvPRReadyForReview   = "pr_ready_for_review"
-	EvPRApproved         = "pr_approved"
-	EvApprovalWithdrawn  = "approval_withdrawn"
-	EvPRChangesRequested = "pr_changes_requested"
-	EvItemAwaitsRelease  = "item_awaits_release"
-	EvReleaseSlotTaken   = "release_slot_taken"
-	EvPRMerged           = "pr_merged"
-	EvItemDone           = "item_done"
-	EvReleaseDone        = "release_done"
+	EvWorkstreamCreated   = "workstream_created"
+	EvWorkstreamLimitsSet = "workstream_limits_set"
+	EvItemAdded           = "item_added"
+	EvPlanStarted         = "plan_started"
+	EvPlanProposed        = "plan_proposed"
+	EvPlanApproved        = "plan_approved"
+	EvPlanDropped         = "plan_dropped"
+	EvItemParked          = "item_parked"
+	EvFlagRaised          = "flag_raised"
+	EvFlagResolved        = "flag_resolved"
+	EvFlagTimedOut        = "flag_timed_out"
+	EvSliceClaimed        = "slice_claimed"
+	EvHeartbeat           = "heartbeat"
+	EvRunClosed           = "run_closed"
+	EvSliceParked         = "slice_parked"
+	EvPROpened            = "pr_opened"
+	EvChecksCompleted     = "checks_completed"
+	EvPRReadyForReview    = "pr_ready_for_review"
+	EvPRApproved          = "pr_approved"
+	EvApprovalWithdrawn   = "approval_withdrawn"
+	EvPRChangesRequested  = "pr_changes_requested"
+	EvItemAwaitsRelease   = "item_awaits_release"
+	EvReleaseSlotTaken    = "release_slot_taken"
+	EvPRMerged            = "pr_merged"
+	EvItemDone            = "item_done"
+	EvReleaseDone         = "release_done"
 )
 
 const (
@@ -50,6 +52,7 @@ const (
 )
 
 type itemAdded struct {
+	Workstream    string  `json:"workstream,omitempty"`
 	ItemID        string  `json:"item_id"`
 	Ref           string  `json:"ref"`
 	Title         string  `json:"title"`
@@ -95,6 +98,7 @@ type flagRef struct {
 }
 
 type sliceClaimed struct {
+	Workstream   string    `json:"workstream,omitempty"`
 	RunID        string    `json:"run_id"`
 	SliceID      string    `json:"slice_id"`
 	RunnerID     string    `json:"runner_id"`
@@ -168,13 +172,37 @@ func (s *State) Apply(e Event) error {
 
 func (s *State) apply(e Event) error {
 	switch e.Type {
+	case EvWorkstreamCreated, EvWorkstreamLimitsSet:
+		var p workstreamLimits
+		if err := json.Unmarshal(e.Data, &p); err != nil {
+			return err
+		}
+		if e.Type == EvWorkstreamCreated {
+			if s.Workstreams[p.Workstream] != nil {
+				return fail(CodeConflict, "workstream %s exists", p.Workstream)
+			}
+			s.Workstreams[p.Workstream] = &Workstream{Name: p.Workstream, Limits: p.Limits, CreatedAt: e.At}
+		} else {
+			ws := s.Workstreams[p.Workstream]
+			if ws == nil {
+				return errUnknown("workstream", p.Workstream)
+			}
+			ws.Limits = p.Limits
+		}
 	case EvItemAdded:
 		var p itemAdded
 		if err := json.Unmarshal(e.Data, &p); err != nil {
 			return err
 		}
+		if p.Workstream == "" {
+			p.Workstream = DefaultWorkstream
+		}
+		if s.Workstreams[p.Workstream] == nil {
+			return errUnknown("workstream", p.Workstream)
+		}
 		s.Items[p.ItemID] = &Item{
-			ID: p.ItemID, Ref: p.Ref, Title: p.Title, Intent: p.Intent, Owner: p.Owner,
+			Workstream: p.Workstream,
+			ID:         p.ItemID, Ref: p.Ref, Title: p.Title, Intent: p.Intent, Owner: p.Owner,
 			Value: p.Value, PredictedTier: p.PredictedTier, Rank: p.Rank,
 			Status: ItemReady, AddedAt: e.At, Slices: []string{},
 		}
@@ -208,7 +236,8 @@ func (s *State) apply(e Event) error {
 		for i, spec := range it.Proposal {
 			id := p.SliceIDs[i]
 			s.Slices[id] = &Slice{
-				ID: id, ItemID: it.ID, Seq: i + 1, Title: spec.Title, Repo: spec.Repo,
+				Workstream: it.Workstream,
+				ID:         id, ItemID: it.ID, Seq: i + 1, Title: spec.Title, Repo: spec.Repo,
 				Criteria: spec.Criteria, Approvers: spec.Approvers, Status: SliceQueued,
 			}
 			it.Slices = append(it.Slices, id)

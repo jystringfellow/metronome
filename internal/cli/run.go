@@ -31,6 +31,7 @@ func (a *app) run(ctx context.Context, args []string) error {
 	fs := newFlags("run")
 	runner := fs.String("runner", "", "")
 	slice := fs.String("slice", "", "")
+	ws := fs.String("workstream", "", "")
 	every := fs.Duration("every", 5*time.Minute, "")
 	if err := parse(fs, args[:separator], 0); err != nil {
 		return err
@@ -41,7 +42,7 @@ func (a *app) run(ctx context.Context, args []string) error {
 	if *every <= 0 {
 		return usagef("--every must be positive")
 	}
-	b, err := a.claim(ctx, *runner, *slice)
+	b, err := a.claim(ctx, *runner, *slice, *ws)
 	if err != nil {
 		if b.Claim.RunID != "" {
 			a.closeRun(ctx, b.Claim.RunID, "", "brief could not be read")

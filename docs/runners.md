@@ -50,6 +50,7 @@ metronome next --runner laptop --json
 ```json
 {
   "claim": {
+    "workstream": "default",
     "run_id": "R1",
     "slice_id": "I1.1",
     "lease_until": "2026-11-27T12:15:00Z"
