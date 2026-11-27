@@ -3,6 +3,11 @@
 This file records what has been decided about Metronome, what the review of SPEC.md found, and what is still
 open.
 
+## Decided (2026-11-27): runner instructions
+
+- [docs/runners.md](docs/runners.md) is the guide for agents taking work from Metronome and people wiring
+  them up. Keep it in sync with the CLI.
+
 ## Decided (2026-11-27): metronome run
 
 - `run --runner ID [--slice S] [--every D] -- CMD [ARGS...]` claims exactly as `next` does. The global request
@@ -281,6 +286,8 @@ Choices made while building step 1 where SPEC.md was silent. Each is easy to cha
 
 Everything section 12 of SPEC.md marks Open or Unverified, plus:
 
+- 2026-11-27: the runner brief does not include ask answers, rework status or the previous branch. How to
+  include this context in the handoff to a runner resuming a slice is undecided.
 - 2026-11-27: terminal Ctrl-C signals the foreground process group, so the wrapped command may receive SIGINT
   twice (directly and forwarded). Whether to suppress forwarding when stdin is a terminal or use a separate
   process group is undecided.

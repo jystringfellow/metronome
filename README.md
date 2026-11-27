@@ -8,6 +8,7 @@ Metronome is a design and an early proof of concept.
 
 - [SPEC.md](SPEC.md): the full design.
 - [DECISIONS.md](DECISIONS.md): what has been decided, what the design review found, and what is still open.
+- [docs/runners.md](docs/runners.md): how agents take work and hand it back.
 
 ## What runs today
 

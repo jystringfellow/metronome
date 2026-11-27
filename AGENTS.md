@@ -5,6 +5,7 @@ evidence. SPEC.md is the design and DECISIONS.md records what has been decided a
 
 ## How to work
 
+- If Metronome handed you work through a claim or `metronome run`, follow [docs/runners.md](docs/runners.md).
 - Do not guess at anything SPEC.md marks Open or Unverified, or that DECISIONS.md lists as proposed. Ask the
   maintainer.
 - Record each decision and each open question in DECISIONS.md, with its date, as you go.
