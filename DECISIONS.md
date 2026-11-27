@@ -3,6 +3,31 @@
 This file records what has been decided about Metronome, what the review of SPEC.md found, and what is still
 open.
 
+## Decided (2026-11-27): metronome run
+
+- `run --runner ID [--slice S] [--every D] -- CMD [ARGS...]` claims exactly as `next` does. The global request
+  ID applies only to the claim. If the brief cannot be read or the command cannot start, the wrapper drops the
+  run best effort. Metronome's own messages go to stderr; the command keeps stdin, stdout and stderr.
+- The command inherits its environment with these overrides (changes to this contract are additive only):
+  - `METRONOME_RUN_ID`: the claimed run ID.
+  - `METRONOME_SLICE_ID`: the claimed slice ID.
+  - `METRONOME_RUNNER`: the runner ID from `--runner`.
+  - `METRONOME_BRIEF`: absolute path to a file containing the same bytes as `next --json` for the claim.
+  - `METRONOME_BRANCH_FILE`: absolute path to an initially empty file for the command to write its branch name.
+  - `METRONOME_URL`: the service URL in effect.
+  - `METRONOME_ACTOR`: the actor in effect.
+  Both files live in a private temporary directory removed when `run` returns.
+- Renew every five minutes by default, leaving margin on the 15-minute lease. A conflict stops renewal without
+  killing the command; other renewal errors are reported and retried. Renewal stops before closing the run.
+- On command exit 0 with a branch, submit; otherwise drop, keeping the slice's slots. The branch is the file's
+  content with surrounding whitespace trimmed; missing, empty or multi-line content means no branch. If the run
+  is already closed, do not close it again. A conflict on closing is reported, including the intended branch
+  when submitting.
+- Forward SIGINT and SIGTERM to the command; cancellation of the caller forwards SIGTERM. Exit with the command's
+  code (128 plus the signal number if killed by a signal), except that failure to close the run other than a
+  conflict changes a successful command's exit code to 1. Invalid usage exits 2; claiming or starting the
+  command failing exits 1.
+
 ## Decided (2026-11-27): the slice brief
 
 - `metronome next` prints the claim, slice and item. With `--json`, it prints one object with these sections:
@@ -221,6 +246,9 @@ Choices made while building step 1 where SPEC.md was silent. Each is easy to cha
 
 Everything section 12 of SPEC.md marks Open or Unverified, plus:
 
+- 2026-11-27: terminal Ctrl-C signals the foreground process group, so the wrapped command may receive SIGINT
+  twice (directly and forwarded). Whether to suppress forwarding when stdin is a terminal or use a separate
+  process group is undecided.
 - The repository for the proof-of-concept pilot, and the mapping from its approver's rules to tiers 0 to 3.
 - How the local service authenticates to the approver's results.
 - When a workstream's own backlog and its subscriptions compete for one free slot, which goes first.

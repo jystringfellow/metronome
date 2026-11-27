@@ -43,6 +43,7 @@ Backlog and plan:
 
 Runners (the connector operations):
   next --runner ID [--slice S] [--json]  claim the next slice and print its brief (next_work)
+  run --runner ID [--slice S] [--every 5m] -- CMD [ARGS...]  claim, run CMD with its brief, renew, submit or drop
   report RUN [--note TEXT]        renew the lease (heartbeat)
   ask (--run R | --item I | --slice S) --type ASK --question TEXT [--owner WHO]
   submit RUN --branch BRANCH      the work will arrive on BRANCH
@@ -112,6 +113,10 @@ func RunWithDeps(ctx context.Context, args []string, out, errOut io.Writer, deps
 	a := &app{out: out, errOut: errOut, requestID: *requestID, prs: deps.GitHub,
 		client: &api.Client{BaseURL: *server, Actor: *actor, HTTP: deps.HTTP}}
 	if err := a.dispatch(ctx, rest[0], rest[1:]); err != nil {
+		var status exitStatus
+		if errors.As(err, &status) {
+			return int(status)
+		}
 		var ue usageError
 		if errors.As(err, &ue) {
 			fmt.Fprintf(errOut, "metronome %s: %s\n", rest[0], ue.msg)
@@ -152,6 +157,8 @@ func (a *app) dispatch(ctx context.Context, cmd string, args []string) error {
 		return a.plan(ctx, args)
 	case "next":
 		return a.next(ctx, args)
+	case "run":
+		return a.run(ctx, args)
 	case "report":
 		return a.report(ctx, args)
 	case "ask":
@@ -409,22 +416,30 @@ func (a *app) next(ctx context.Context, args []string) error {
 	if *runner == "" {
 		return usagef("--runner ID is required")
 	}
-	var res flow.Result
-	if err := a.client.Post(ctx, "/v1/claims", a.requestID, api.ClaimRequest{RunnerID: *runner, SliceID: *slice}, &res); err != nil {
-		return err
-	}
-	c, ok := flow.ClaimFrom(res)
-	if !ok {
-		return fmt.Errorf("the claim returned no run")
-	}
-	b, err := a.readBrief(ctx, c)
+	b, err := a.claim(ctx, *runner, *slice)
 	if err != nil {
-		return fmt.Errorf("run %s claimed slice %s, but its brief could not be read: %w", c.RunID, c.SliceID, err)
+		return err
 	}
 	if *asJSON {
 		return writeJSON(a.out, b)
 	}
 	return b.writeText(a.out)
+}
+
+func (a *app) claim(ctx context.Context, runner, slice string) (brief, error) {
+	var res flow.Result
+	if err := a.client.Post(ctx, "/v1/claims", a.requestID, api.ClaimRequest{RunnerID: runner, SliceID: slice}, &res); err != nil {
+		return brief{}, err
+	}
+	c, ok := flow.ClaimFrom(res)
+	if !ok {
+		return brief{}, fmt.Errorf("the claim returned no run")
+	}
+	b, err := a.readBrief(ctx, c)
+	if err != nil {
+		return brief{Claim: briefClaim{RunID: c.RunID, SliceID: c.SliceID, LeaseUntil: c.LeaseUntil.UTC()}}, fmt.Errorf("run %s claimed slice %s, but its brief could not be read: %w", c.RunID, c.SliceID, err)
+	}
+	return b, nil
 }
 
 type brief struct {
