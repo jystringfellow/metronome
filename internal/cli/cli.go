@@ -42,7 +42,7 @@ Backlog and plan:
   plan drop ITEM
 
 Runners (the connector operations):
-  next --runner ID [--slice S]    claim the next slice (next_work)
+  next --runner ID [--slice S] [--json]  claim the next slice and print its brief (next_work)
   report RUN [--note TEXT]        renew the lease (heartbeat)
   ask (--run R | --item I | --slice S) --type ASK --question TEXT [--owner WHO]
   submit RUN --branch BRANCH      the work will arrive on BRANCH
@@ -402,6 +402,7 @@ func (a *app) next(ctx context.Context, args []string) error {
 	fs := newFlags("next")
 	runner := fs.String("runner", "", "")
 	slice := fs.String("slice", "", "")
+	asJSON := fs.Bool("json", false, "")
 	if err := parse(fs, args, 0); err != nil {
 		return err
 	}
@@ -416,8 +417,90 @@ func (a *app) next(ctx context.Context, args []string) error {
 	if !ok {
 		return fmt.Errorf("the claim returned no run")
 	}
-	fmt.Fprintf(a.out, "run %s claimed slice %s; lease until %s\n", c.RunID, c.SliceID, c.LeaseUntil.Local().Format(time.Kitchen))
-	return nil
+	b, err := a.readBrief(ctx, c)
+	if err != nil {
+		return fmt.Errorf("run %s claimed slice %s, but its brief could not be read: %w", c.RunID, c.SliceID, err)
+	}
+	if *asJSON {
+		return writeJSON(a.out, b)
+	}
+	return b.writeText(a.out)
+}
+
+type brief struct {
+	Claim briefClaim `json:"claim"`
+	Slice briefSlice `json:"slice"`
+	Item  briefItem  `json:"item"`
+}
+
+type briefClaim struct {
+	RunID      string    `json:"run_id"`
+	SliceID    string    `json:"slice_id"`
+	LeaseUntil time.Time `json:"lease_until"`
+}
+
+type briefSlice struct {
+	ID        string   `json:"id"`
+	Repo      string   `json:"repo"`
+	Title     string   `json:"title"`
+	Criteria  []string `json:"criteria"`
+	Approvers []string `json:"approvers"`
+}
+
+type briefItem struct {
+	ID     string `json:"id"`
+	Ref    string `json:"ref"`
+	Title  string `json:"title"`
+	Intent string `json:"intent"`
+}
+
+func (a *app) readBrief(ctx context.Context, c flow.Claim) (brief, error) {
+	var board api.Board
+	if err := a.client.Get(ctx, "/v1/board", &board); err != nil {
+		return brief{}, err
+	}
+	for _, sl := range board.Slices {
+		if sl.ID != c.SliceID {
+			continue
+		}
+		for _, it := range board.Items {
+			if it.ID == sl.ItemID {
+				return brief{
+					Claim: briefClaim{RunID: c.RunID, SliceID: c.SliceID, LeaseUntil: c.LeaseUntil.UTC()},
+					Slice: briefSlice{ID: sl.ID, Repo: sl.Repo, Title: sl.Title,
+						Criteria: append([]string{}, sl.Criteria...), Approvers: append([]string{}, sl.Approvers...)},
+					Item: briefItem{ID: it.ID, Ref: it.Ref, Title: it.Title, Intent: it.Intent},
+				}, nil
+			}
+		}
+		return brief{}, fmt.Errorf("item %s missing from board", sl.ItemID)
+	}
+	return brief{}, fmt.Errorf("slice %s missing from board", c.SliceID)
+}
+
+func (b brief) writeText(w io.Writer) error {
+	var text strings.Builder
+	fmt.Fprintf(&text, "run %s claimed slice %s; lease until %s\n", b.Claim.RunID, b.Claim.SliceID, b.Claim.LeaseUntil.Local().Format(time.Kitchen))
+	fmt.Fprintf(&text, "slice:     %s %s\nrepo:      %s\n", b.Slice.ID, b.Slice.Title, b.Slice.Repo)
+	fmt.Fprintf(&text, "item:      %s %s (%s)\n", b.Item.Ref, b.Item.Title, b.Item.ID)
+	intent := b.Item.Intent
+	if intent == "" {
+		intent = "none given"
+	}
+	fmt.Fprintf(&text, "intent:    %s\n", strings.ReplaceAll(intent, "\n", "\n           "))
+	if len(b.Slice.Criteria) == 0 {
+		fmt.Fprintln(&text, "criteria:  none given")
+	} else {
+		fmt.Fprintln(&text, "criteria:")
+		for _, criterion := range b.Slice.Criteria {
+			fmt.Fprintf(&text, "  - %s\n", strings.ReplaceAll(criterion, "\n", "\n    "))
+		}
+	}
+	if len(b.Slice.Approvers) > 0 {
+		fmt.Fprintf(&text, "approvers: %s\n", strings.Join(b.Slice.Approvers, ", "))
+	}
+	_, err := io.WriteString(w, text.String())
+	return err
 }
 
 func (a *app) report(ctx context.Context, args []string) error {

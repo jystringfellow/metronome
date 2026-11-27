@@ -3,6 +3,19 @@
 This file records what has been decided about Metronome, what the review of SPEC.md found, and what is still
 open.
 
+## Decided (2026-11-27): the slice brief
+
+- `metronome next` prints the claim, slice and item. With `--json`, it prints one object with these sections:
+  `claim` (`run_id`, `slice_id`, `lease_until`), `slice` (`id`, `repo`, `title`, `criteria`, `approvers`),
+  and `item` (`id`, `ref`, `title`, `intent`). Every field is always present; empty criteria and approvers are
+  arrays, absent intent is an empty string, and the lease is an RFC 3339 timestamp in UTC. Changes to this
+  contract are additive only. `metronome run` will hand this same object to its command.
+- The CLI reads `GET /v1/board` after claiming. No new endpoint is needed because the slice and item brief
+  fields are fixed once written. If the read fails or the slice or item is missing, the CLI reports the run
+  and fails without printing a partial brief.
+- The brief is not the context bundle (`get_bundle`) in SPEC.md section 9, which stays as designed and is
+  still to be built.
+
 ## Decided (2026-11-26)
 
 - **Local first, hosted as the goal.** The local version proves the protocol with one person and one repository.
