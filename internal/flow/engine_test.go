@@ -3,6 +3,7 @@ package flow_test
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"testing"
 	"time"
 
@@ -316,6 +317,99 @@ func TestFailedChecksSendTheSliceBackAsReworkKeepingSlots(t *testing.T) {
 	}
 	if next := h.claim("cloud"); next.SliceID != c.SliceID {
 		t.Fatalf("next claim = %s, want rework %s ahead of new work", next.SliceID, c.SliceID)
+	}
+}
+
+func TestFailedChecksInReviewSendTheSliceBackAsReworkKeepingTheReviewReservation(t *testing.T) {
+	h := newHarness(t, func(cfg *flow.Config) { cfg.Limits.Review = 1 })
+	h.backlog(1)
+	h.approvedItem("I1", 2)
+	c := h.claim("laptop")
+	h.toReview(c.SliceID)
+	if u := h.usage(); u.Execute != 0 || u.Review != 1 || u.PerApprover["rev"] != 1 {
+		t.Fatalf("usage in review = %+v", u)
+	}
+	h.clock.advance(time.Minute)
+	h.ok(h.eng.ChecksCompleted(ctx(), "github", "", c.SliceID, "sha-"+c.SliceID, false))
+	if sl := h.slice(c.SliceID); sl.Status != flow.SliceStalled || !sl.Rework || sl.HoldsExecute || !sl.HoldsReview || !sl.StalledAt.Equal(h.clock.Now()) {
+		t.Fatalf("slice after red checks in review = %+v", sl)
+	}
+	if u := h.usage(); u.Execute != 0 || u.Review != 1 || u.PerApprover["rev"] != 0 {
+		t.Fatalf("usage after red checks = %+v", u)
+	}
+	fixer := h.claim("laptop")
+	if fixer.SliceID != c.SliceID {
+		t.Fatalf("next claim = %s, want rework %s", fixer.SliceID, c.SliceID)
+	}
+	if u := h.usage(); u.Execute != 1 || u.Review != 1 || u.PerApprover["rev"] != 0 {
+		t.Fatalf("usage after rework claim = %+v", u)
+	}
+	h.ok(h.eng.Submit(ctx(), "laptop", "", fixer.RunID, "metronome/"+fixer.SliceID))
+	h.ok(h.eng.PROpened(ctx(), "github", "", fixer.SliceID, "acme/app", 10, "sha-fix"))
+	h.ok(h.eng.ChecksCompleted(ctx(), "github", "", fixer.SliceID, "sha-fix", true))
+	h.ok(h.eng.ReadyForReview(ctx(), "github", "", fixer.SliceID))
+	if sl := h.slice(fixer.SliceID); sl.Status != flow.SliceInReview || sl.Rework || sl.HoldsExecute || !sl.HoldsReview {
+		t.Fatalf("slice after the fix = %+v", sl)
+	}
+	if u := h.usage(); u.Execute != 0 || u.Review != 1 || u.PerApprover["rev"] != 1 {
+		t.Fatalf("usage back in review = %+v", u)
+	}
+}
+
+func TestAReworkClaimAfterRedChecksInReviewNeedsAnExecuteSlot(t *testing.T) {
+	h := newHarness(t, func(cfg *flow.Config) { cfg.Limits.Execute = 1 })
+	h.backlog(1)
+	h.approvedItem("I1", 2)
+	c := h.claim("laptop")
+	h.toReview(c.SliceID)
+	h.claim("cloud")
+	h.ok(h.eng.ChecksCompleted(ctx(), "github", "", c.SliceID, "sha-"+c.SliceID, false))
+	_, err := h.eng.Claim(ctx(), "laptop", "", "laptop", c.SliceID)
+	wantCode(t, err, flow.CodeNoCapacity)
+	if sl := h.slice(c.SliceID); sl.Status != flow.SliceStalled || sl.HoldsExecute || !sl.HoldsReview {
+		t.Fatalf("slice after refused claim = %+v", sl)
+	}
+	if u := h.usage(); u.Execute != 1 || u.Review != 2 || u.PerApprover["rev"] != 0 {
+		t.Fatalf("usage after refused claim = %+v", u)
+	}
+}
+
+func TestChecksForAnotherHeadAreRefusedAndChangeNothing(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		inReview bool
+		success  bool
+	}{
+		{name: "red in review", inReview: true},
+		{name: "green before review", success: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t, nil)
+			h.backlog(1)
+			h.approvedItem("I1", 1)
+			c := h.claim("laptop")
+			if tc.inReview {
+				h.toReview(c.SliceID)
+			} else {
+				h.ok(h.eng.Submit(ctx(), "laptop", "", c.RunID, "metronome/"+c.SliceID))
+				h.ok(h.eng.PROpened(ctx(), "github", "", c.SliceID, "acme/app", 10, "sha-"+c.SliceID))
+			}
+			before := h.slice(c.SliceID)
+			pr := *before.PR
+			before.PR = &pr
+			usage := h.usage()
+			res, err := h.eng.ChecksCompleted(ctx(), "github", "", c.SliceID, "old", tc.success)
+			wantCode(t, err, flow.CodeConflict)
+			if len(res.Events) != 0 {
+				t.Fatalf("stale checks emitted events: %v", res.Events)
+			}
+			if sl := h.slice(c.SliceID); !reflect.DeepEqual(sl, before) {
+				t.Fatalf("stale checks changed slice from %+v to %+v", before, sl)
+			}
+			if u := h.usage(); !reflect.DeepEqual(u, usage) {
+				t.Fatalf("stale checks changed usage from %+v to %+v", usage, u)
+			}
+		})
 	}
 }
 

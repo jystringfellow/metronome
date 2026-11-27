@@ -65,6 +65,23 @@ open.
   GitHub reports no merger for. The poller says so instead.
 - Proposed by the agent and accepted by the maintainer on 2026-11-26.
 
+## Decided (2026-11-26): failed checks in review
+
+- **A red head sends a slice in review back to the fixer.** Failed checks on the PR's current head of an
+  `in_review` slice stall it as rework, exactly as on `pr_open`: the next claim takes it first, it keeps its
+  Review reservation, and the claim takes an Execute slot again, as rework after a change request does. It
+  leaves its approver's count until it returns to review on green checks. Why: a red head cannot be approved,
+  so leaving it in review held Review capacity and the approver's attention while nobody could fix it.
+- **Failed check results for any other head are refused as stale** and change nothing.
+- Proposed by the agent and accepted by the maintainer on 2026-11-26.
+
+## Agent decision (2026-11-27): current-head checks
+
+- **Green check results for any other head are also refused as stale.** A new head must be recorded with
+  `pr-opened` before recording checks on it, including when checks are entered by hand. Why: a stale green
+  result would move the recorded head back and let `ReadyForReview` trust an old commit.
+- Decided by the implementing agent on 2026-11-27, separate from the maintainer's 2026-11-26 decision.
+
 ## Designed, not built: open workstreams and shared work (2026-11-26)
 
 Recorded so the data model leaves room for it. Nothing here is in the proof of concept.
@@ -225,5 +242,3 @@ Everything section 12 of SPEC.md marks Open or Unverified, plus:
 - When a workstream's own backlog and its subscriptions compete for one free slot, which goes first.
 - Which other kinds of identity link to support, such as agent attribution tools.
 - How the OIDC provider is configured for a self-hosted install.
-- A check failure on a slice already in review leaves it in review; only the approval waits. Whether it should
-  go back to the fixer.

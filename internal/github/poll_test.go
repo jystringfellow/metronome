@@ -233,6 +233,64 @@ func TestAHeadPushedAwayAndBackInReviewCanStillBeApproved(t *testing.T) {
 	}
 }
 
+func TestASliceInReviewWhoseHeadTurnsRedGoesBackForReworkAndReturnsWhenGreen(t *testing.T) {
+	ctx := context.Background()
+	eng, err := flow.NewEngine(ctx, flow.DefaultConfig(), store.NewMemory(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	submittedSlice(t, eng)
+	key := "acme/app metronome/I1.1"
+	gh := fakeGitHub{key: {Repo: "acme/app", Number: 7, HeadSHA: "aaa", State: github.PROpen, HeadChecks: github.ChecksSuccess}}
+	p := github.Poller{
+		Client: &api.Client{BaseURL: "http://metronome.test", Actor: "github", HTTP: &http.Client{Transport: handlerTransport{api.Handler(eng)}}},
+		Source: gh,
+	}
+	poll := func() github.PollResult {
+		t.Helper()
+		res, err := p.Once(ctx)
+		if err != nil || len(res.Errors) > 0 {
+			t.Fatalf("poll: %v %v", err, res.Errors)
+		}
+		return res
+	}
+	poll()
+	if sl := slice(t, eng); sl.Status != flow.SliceInReview {
+		t.Fatalf("slice before red checks = %+v", sl)
+	}
+	gh[key].HeadSHA, gh[key].HeadChecks = "bbb", github.ChecksFailure
+	poll()
+	if sl := slice(t, eng); sl.Status != flow.SliceStalled || !sl.Rework || !sl.HoldsReview || sl.HoldsExecute || sl.PR.HeadSHA != "bbb" {
+		t.Fatalf("slice after red checks = %+v", sl)
+	}
+	var board api.Board
+	if err := p.Client.Get(ctx, "/v1/board", &board); err != nil {
+		t.Fatal(err)
+	}
+	if u := board.Usage; u.Execute != 0 || u.Review != 1 || u.PerApprover["rev"] != 0 {
+		t.Fatalf("usage after red checks = %+v", u)
+	}
+	if res := poll(); len(res.Recorded) != 0 {
+		t.Fatalf("poll recorded stalled slice: %v", res.Recorded)
+	}
+	r, err := eng.Claim(ctx, "laptop", "", "laptop", "")
+	must(t, r, err)
+	r, err = eng.Submit(ctx, "laptop", "", "R2", "metronome/I1.1")
+	must(t, r, err)
+	gh[key].HeadSHA, gh[key].HeadChecks = "ccc", github.ChecksSuccess
+	poll()
+	if sl := slice(t, eng); sl.Status != flow.SliceInReview || sl.PR.HeadSHA != "ccc" || sl.Rework || !sl.HoldsReview || sl.HoldsExecute {
+		t.Fatalf("slice after green checks on fixed head = %+v", sl)
+	}
+	board = api.Board{}
+	if err := p.Client.Get(ctx, "/v1/board", &board); err != nil {
+		t.Fatal(err)
+	}
+	if u := board.Usage; u.Execute != 0 || u.Review != 1 || u.PerApprover["rev"] != 1 {
+		t.Fatalf("usage back in review = %+v", u)
+	}
+}
+
 func TestAMergeBeforeApprovalIsRecordedAsApprovedByTheMerger(t *testing.T) {
 	eng, err := flow.NewEngine(context.Background(), flow.DefaultConfig(), store.NewMemory(), nil)
 	if err != nil {
