@@ -21,17 +21,17 @@ the PR opening, checks on its head, review and merge. The same events can still 
 go build -o metronome ./cmd/metronome
 ./metronome serve --db metronome.db &
 
-./metronome backlog sync backlog.json        # {"items":[{"ref":"ACME-1","title":"…","owner":"pat","predicted_tier":1}]}
+./metronome backlog sync backlog.json        # {"items":[{"ref":"ACME-1","title":"…","intent":"…","owner":"pat","predicted_tier":1}]}
 ./metronome plan start
-./metronome plan propose I1 --slices slices.json   # [{"title":"…","repo":"acme/app","approvers":["rev"]}]
+./metronome plan propose I1 --slices slices.json   # [{"title":"…","repo":"acme/app","criteria":["…"],"approvers":["rev"]}]
 ./metronome --as pat plan approve I1
 
-./metronome next --runner laptop             # claims a slice: run R1, lease 15 minutes
+./metronome next --runner laptop             # claims a slice and prints its brief: run R1, lease 15 minutes
 ./metronome report R1 --note "tests written" # renews the lease
 ./metronome ask --run R1 --type answer --question "CSV or JSON?"
 ./metronome inbox pat
 ./metronome answer F2 "CSV"
-./metronome next --runner laptop             # resumes the answered slice: run R2
+./metronome next --runner laptop --json      # resumes the answered slice as JSON: run R2
 ./metronome submit R2 --branch metronome/I1.1
 ./metronome --as github github poll --every 1m  # follows the PR on that branch until it merges
 ./metronome board
