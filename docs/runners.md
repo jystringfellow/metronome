@@ -38,6 +38,7 @@ item:      ACME-1 Add export (I1)
 intent:    Let people save their records
 criteria:
   - Records can be saved as a file
+resume:    no earlier run
 ```
 
 For a machine-readable brief, use this instead of the text command. Both commands claim work.
@@ -65,6 +66,17 @@ metronome next --runner laptop --json
     "ref": "ACME-1",
     "title": "Add export",
     "intent": "Let people save their records"
+  },
+  "history": {
+    "reason": "",
+    "rework": false,
+    "rework_reason": "",
+    "failed_head": "",
+    "changes_requested_by": "",
+    "previous_run": "",
+    "branch": "",
+    "pr": null,
+    "asks": []
   }
 }
 ```
@@ -73,13 +85,33 @@ metronome next --runner laptop --json
   (RFC 3339 in UTC).
 - `slice`: the work to deliver, its repository, title, acceptance criteria and named approvers.
 - `item`: the parent item's ID, backlog reference, title and intent.
+- `history`: a snapshot of why the slice is claimable, its rework status, previous run and recorded branch
+  and PR, and answered asks. It is fixed at claim time, including when a claim is repeated with the same request ID.
 
 All JSON fields are present. Empty lists are `[]` and missing intent is `""`. Changes to the JSON contract
 are additive only. Text output says `none given` for missing intent or criteria and omits empty approvers.
 
-The brief is not the full context bundle. It does not include previous ask answers, rework status or the
-previous branch. Use `metronome board` to see slice status, including `(rework)`, and `metronome board --json`
-to see the recorded branch. If `next` claims a slice but cannot read the brief, it fails and names the run.
+The `history.reason` field explains why work is available again:
+
+| Reason | Meaning |
+| --- | --- |
+| `""` | No earlier interruption or rework. |
+| `checks_failed` | Checks failed on the head in `failed_head`. |
+| `changes_requested` | Review requested changes; `changes_requested_by` names the reviewer if recorded. |
+| `lease_expired` | The previous run's lease expired. |
+| `dropped` | The previous run was dropped. |
+| `answered_ask` | The last open ask on the flagged slice was answered. |
+| `ask_timed_out` | An unanswered ask timed out and the slice parked. |
+
+`rework` is true after failed checks or a change request. `rework_reason` and its associated `failed_head`
+or `changes_requested_by` persist until the next submit, even if a subsequent interruption changes `reason`.
+`previous_run` is the previous run ID and `branch` is the last submitted branch, or `""` when absent.
+`pr` contains `repo`, `number` and `head_sha` for the recorded PR, or is `null` when absent. `asks` lists
+resolved asks on this slice in raised order, with `id`, `type`, `question`, `answer`, `answered_by` (empty
+if not recorded) and `answered_at` (RFC 3339 UTC). Open asks, timed-out asks and item-level asks are excluded.
+Text output shows the resume reason and, when applicable, rework, previous work and answered asks.
+
+The brief is not the full context bundle. If `next` claims a slice but cannot read the brief, it fails and names the run.
 Drop that run rather than starting work with a partial brief.
 
 ## While working
@@ -123,8 +155,7 @@ metronome answer F2 "CSV"
 ```
 
 Use the flag ID from the inbox. When the last open ask on the flagged slice is answered, the slice becomes
-stalled. A new claim can resume it with a new run ID. The answer is not in the new brief. Read
-`metronome events` for the `flag_raised` and `flag_resolved` events, matching the slice and flag IDs.
+stalled. A new claim can resume it with a new run ID. The answer is in the new brief's `history.asks`.
 An unanswered `answer` ask times out after 24 hours in the proof of concept. The slice parks and frees its
 slots without an answer. Other ask types stay open past their timeout. A timeout is not a decision.
 
@@ -155,7 +186,8 @@ metronome --as github github poll --every 1m
 
 Without `--every`, the poller runs once. It follows the PR on the submitted branch and records the PR opening,
 checks on its head, review and merge. A change request that sends the slice back to Execute makes it available
-for another claim as rework. The runner must not enter GitHub events by hand.
+for another claim as rework. The new brief identifies who requested changes in `history.changes_requested_by`.
+The runner must not enter GitHub events by hand.
 
 ## Wrap an agent with `metronome run`
 

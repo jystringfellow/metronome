@@ -443,9 +443,10 @@ func (a *app) claim(ctx context.Context, runner, slice string) (brief, error) {
 }
 
 type brief struct {
-	Claim briefClaim `json:"claim"`
-	Slice briefSlice `json:"slice"`
-	Item  briefItem  `json:"item"`
+	Claim   briefClaim   `json:"claim"`
+	Slice   briefSlice   `json:"slice"`
+	Item    briefItem    `json:"item"`
+	History briefHistory `json:"history"`
 }
 
 type briefClaim struct {
@@ -469,6 +470,49 @@ type briefItem struct {
 	Intent string `json:"intent"`
 }
 
+type briefHistory struct {
+	Reason             string     `json:"reason"`
+	Rework             bool       `json:"rework"`
+	ReworkReason       string     `json:"rework_reason"`
+	FailedHead         string     `json:"failed_head"`
+	ChangesRequestedBy string     `json:"changes_requested_by"`
+	PreviousRun        string     `json:"previous_run"`
+	Branch             string     `json:"branch"`
+	PR                 *briefPR   `json:"pr"`
+	Asks               []briefAsk `json:"asks"`
+}
+
+type briefPR struct {
+	Repo    string `json:"repo"`
+	Number  int    `json:"number"`
+	HeadSHA string `json:"head_sha"`
+}
+
+type briefAsk struct {
+	ID         string       `json:"id"`
+	Type       flow.AskType `json:"type"`
+	Question   string       `json:"question"`
+	Answer     string       `json:"answer"`
+	AnsweredBy string       `json:"answered_by"`
+	AnsweredAt time.Time    `json:"answered_at"`
+}
+
+func newBriefHistory(snapshot flow.SliceHistory) briefHistory {
+	history := briefHistory{Reason: snapshot.Reason, Rework: snapshot.Rework, ReworkReason: snapshot.ReworkReason,
+		FailedHead: snapshot.FailedHead, ChangesRequestedBy: snapshot.ChangesRequestedBy,
+		PreviousRun: snapshot.PreviousRun, Branch: snapshot.Branch, Asks: []briefAsk{}}
+	if snapshot.PR != nil {
+		pr := briefPR(*snapshot.PR)
+		history.PR = &pr
+	}
+	for _, ask := range snapshot.Asks {
+		answer := briefAsk(ask)
+		answer.AnsweredAt = answer.AnsweredAt.UTC()
+		history.Asks = append(history.Asks, answer)
+	}
+	return history
+}
+
 func (a *app) readBrief(ctx context.Context, c flow.Claim) (brief, error) {
 	var board api.Board
 	if err := a.client.Get(ctx, "/v1/board", &board); err != nil {
@@ -480,11 +524,16 @@ func (a *app) readBrief(ctx context.Context, c flow.Claim) (brief, error) {
 		}
 		for _, it := range board.Items {
 			if it.ID == sl.ItemID {
+				var snapshot flow.SliceHistory
+				if err := a.client.Get(ctx, "/v1/runs/"+c.RunID+"/history", &snapshot); err != nil {
+					return brief{}, err
+				}
 				return brief{
 					Claim: briefClaim{RunID: c.RunID, SliceID: c.SliceID, LeaseUntil: c.LeaseUntil.UTC()},
 					Slice: briefSlice{ID: sl.ID, Repo: sl.Repo, Title: sl.Title,
 						Criteria: append([]string{}, sl.Criteria...), Approvers: append([]string{}, sl.Approvers...)},
-					Item: briefItem{ID: it.ID, Ref: it.Ref, Title: it.Title, Intent: it.Intent},
+					Item:    briefItem{ID: it.ID, Ref: it.Ref, Title: it.Title, Intent: it.Intent},
+					History: newBriefHistory(snapshot),
 				}, nil
 			}
 		}
@@ -514,8 +563,66 @@ func (b brief) writeText(w io.Writer) error {
 	if len(b.Slice.Approvers) > 0 {
 		fmt.Fprintf(&text, "approvers: %s\n", strings.Join(b.Slice.Approvers, ", "))
 	}
+	b.History.writeText(&text)
 	_, err := io.WriteString(w, text.String())
 	return err
+}
+
+func (h briefHistory) describe(reason string) string {
+	switch reason {
+	case "":
+		return "no earlier run"
+	case flow.ResumeChecksFailed:
+		return "checks failed on " + h.FailedHead
+	case flow.ResumeChangesRequested:
+		if h.ChangesRequestedBy != "" {
+			return "changes requested by " + h.ChangesRequestedBy
+		}
+		return "changes requested"
+	case flow.ResumeLeaseExpired:
+		return "lease expired on run " + h.PreviousRun
+	case flow.ResumeDropped:
+		return "run " + h.PreviousRun + " was dropped"
+	case flow.ResumeAnswered:
+		return "asks answered after run " + h.PreviousRun
+	case flow.ResumeAskTimedOut:
+		return "ask timed out unanswered after run " + h.PreviousRun
+	default:
+		return reason
+	}
+}
+
+func (h briefHistory) writeText(text *strings.Builder) {
+	fmt.Fprintf(text, "resume:    %s\n", h.describe(h.Reason))
+	if h.Rework {
+		fmt.Fprintf(text, "rework:    %s\n", h.describe(h.ReworkReason))
+	}
+	var previous []string
+	if h.PreviousRun != "" {
+		previous = append(previous, "run "+h.PreviousRun)
+	}
+	if h.Branch != "" {
+		previous = append(previous, "branch "+h.Branch)
+	}
+	if h.PR != nil {
+		previous = append(previous, fmt.Sprintf("PR %s#%d at %s", h.PR.Repo, h.PR.Number, h.PR.HeadSHA))
+	}
+	if len(previous) > 0 {
+		fmt.Fprintf(text, "previous:  %s\n", strings.Join(previous, ", "))
+	}
+	if len(h.Asks) > 0 {
+		fmt.Fprintln(text, "asks:")
+		for _, ask := range h.Asks {
+			prefix := fmt.Sprintf("  - %s %s: ", ask.ID, ask.Type)
+			fmt.Fprintf(text, "%s%s\n", prefix, strings.ReplaceAll(ask.Question, "\n", "\n"+strings.Repeat(" ", len(prefix))))
+			fmt.Fprintf(text, "      answer: %s\n", strings.ReplaceAll(ask.Answer, "\n", "\n              "))
+			fmt.Fprint(text, "      answered")
+			if ask.AnsweredBy != "" {
+				fmt.Fprintf(text, " by %s", ask.AnsweredBy)
+			}
+			fmt.Fprintf(text, " at %s\n", ask.AnsweredAt.Local().Format("2006-01-02 15:04"))
+		}
+	}
 }
 
 func (a *app) report(ctx context.Context, args []string) error {

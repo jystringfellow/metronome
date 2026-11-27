@@ -50,6 +50,62 @@ func request(t *testing.T, server *httptest.Server, method, path string) (*http.
 	return resp, body
 }
 
+func TestUnknownRunHistory(t *testing.T) {
+	server := testServer(t, store.NewMemory())
+	resp, body := request(t, server, http.MethodGet, "/v1/runs/R9/history")
+	if resp.StatusCode != http.StatusNotFound || !strings.Contains(string(body), `"code":"not_found"`) {
+		t.Fatalf("history returned %d: %s", resp.StatusCode, body)
+	}
+}
+
+func TestResumedBriefOverHTTP(t *testing.T) {
+	dir := t.TempDir()
+	storage, err := store.OpenSQLite(context.Background(), filepath.Join(dir, "history.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = storage.Close() })
+	server := testServer(t, storage)
+	run := func(actor string, args ...string) string {
+		t.Helper()
+		var output, stderr bytes.Buffer
+		code := cli.RunWithHTTP(context.Background(), append([]string{"--server", server.URL, "--as", actor}, args...), &output, &stderr, server.Client())
+		if code != 0 {
+			t.Fatalf("%v: exit %d: %s%s", args, code, output.String(), stderr.String())
+		}
+		return output.String()
+	}
+	backlog := filepath.Join(dir, "backlog.json")
+	slices := filepath.Join(dir, "slices.json")
+	if err := os.WriteFile(backlog, []byte(`{"items":[{"ref":"ACME-1","title":"Export reports","owner":"pat","predicted_tier":1}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(slices, []byte(`[{"title":"CSV export","repo":"acme/app"}]`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	run("pat", "backlog", "sync", backlog)
+	run("pat", "plan", "start")
+	run("pat", "plan", "propose", "I1", "--slices", slices)
+	run("pat", "plan", "approve", "I1")
+	run("laptop", "next", "--runner", "laptop")
+	run("laptop", "ask", "--run", "R1", "--type", "answer", "--question", "CSV or JSON?")
+	run("pat", "answer", "F2", "CSV")
+	first := run("cloud", "--request-id", "resume", "next", "--runner", "cloud", "--json")
+	var brief struct {
+		History flow.SliceHistory `json:"history"`
+	}
+	if err := json.Unmarshal([]byte(first), &brief); err != nil {
+		t.Fatal(err)
+	}
+	if history := brief.History; history.Reason != flow.ResumeAnswered || history.PreviousRun != "R1" || len(history.Asks) != 1 || history.Asks[0].Answer != "CSV" {
+		t.Fatalf("unexpected resume brief: %s", first)
+	}
+	wrapped := run("cloud", "--request-id", "resume", "run", "--runner", "cloud", "--", "sh", "-c", `cat "$METRONOME_BRIEF"`)
+	if wrapped != first {
+		t.Fatalf("wrapped brief = %s, want %s", wrapped, first)
+	}
+}
+
 func TestBoardAssets(t *testing.T) {
 	server := testServer(t, store.NewMemory())
 	assets := map[string]string{}

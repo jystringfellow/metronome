@@ -120,9 +120,15 @@ func TestNextPrintsTheSliceBrief(t *testing.T) {
 		"intent:    Let customers download their data\n           Include all records\n",
 		"criteria:\n  - GET /export returns CSV\n  - An empty account exports a header row\n    No data rows\n",
 		"approvers: rev, sam\n",
+		"resume:    no earlier run\n",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("next missing %q:\n%s", want, out)
+		}
+	}
+	for _, label := range []string{"rework:", "previous:", "asks:"} {
+		if strings.Contains(out, label) {
+			t.Fatalf("fresh claim contains %q:\n%s", label, out)
 		}
 	}
 	out = e.ok("laptop", "next", "--runner", "laptop", "--slice", "I1.2")
@@ -166,11 +172,12 @@ func TestNextJSONPrintsTheBrief(t *testing.T) {
 		t.Fatalf("lease_until = %q, want a future UTC timestamp", lease)
 	}
 	want := map[string]map[string]any{
-		"claim": {"run_id": "R1", "slice_id": "I1.1", "lease_until": lease},
-		"slice": {"id": "I1.1", "repo": "acme/app", "title": "API endpoint", "criteria": []any{"GET /export returns CSV", "An empty account exports a header row\nNo data rows"}, "approvers": []any{"rev", "sam"}},
-		"item":  {"id": "I1", "ref": "ACME-1", "title": "Add export", "intent": "Let customers download their data\nInclude all records"},
+		"claim":   {"run_id": "R1", "slice_id": "I1.1", "lease_until": lease},
+		"slice":   {"id": "I1.1", "repo": "acme/app", "title": "API endpoint", "criteria": []any{"GET /export returns CSV", "An empty account exports a header row\nNo data rows"}, "approvers": []any{"rev", "sam"}},
+		"item":    {"id": "I1", "ref": "ACME-1", "title": "Add export", "intent": "Let customers download their data\nInclude all records"},
+		"history": emptyHistory(),
 	}
-	if !reflect.DeepEqual(brief, want) {
+	if !reflect.DeepEqual(brief, want) || !strings.Contains(out, `"asks": []`) || !strings.Contains(out, `"pr": null`) {
 		t.Fatalf("brief = %#v, want %#v", brief, want)
 	}
 	out = e.ok("laptop", "next", "--runner", "laptop", "--slice", "I1.2", "--json")
@@ -179,6 +186,97 @@ func TestNextJSONPrintsTheBrief(t *testing.T) {
 	want["slice"] = map[string]any{"id": "I1.2", "repo": "acme/docs", "title": "Docs", "criteria": []any{}, "approvers": []any{}}
 	if !reflect.DeepEqual(brief, want) || !strings.Contains(out, `"approvers": []`) {
 		t.Fatalf("second brief = %s, want %#v", out, want)
+	}
+}
+
+func emptyHistory() map[string]any {
+	return map[string]any{"reason": "", "rework": false, "rework_reason": "", "failed_head": "", "changes_requested_by": "", "previous_run": "", "branch": "", "pr": nil, "asks": []any{}}
+}
+
+func (e *env) resumedBrief(requestID string, wantText ...string) map[string]any {
+	e.t.Helper()
+	args := []string{"--request-id", requestID, "next", "--runner", "cloud"}
+	text := e.ok("cloud", args...)
+	for _, want := range wantText {
+		if !strings.Contains(text, want) {
+			e.t.Errorf("next missing %q:\n%s", want, text)
+		}
+	}
+	return decodeBrief(e.t, e.ok("cloud", append(args, "--json")...))["history"]
+}
+
+func TestNextResumesAnsweredAsk(t *testing.T) {
+	e := newBriefEnv(t)
+	e.ok("laptop", "next", "--runner", "laptop")
+	e.ok("laptop", "ask", "--run", "R1", "--type", "answer", "--question", "CSV or JSON?")
+	start := time.Now()
+	e.ok("pat", "answer", "F2", "CSV\nwith headers")
+	history := e.resumedBrief("resume", "resume:    asks answered after run R1\n", "previous:  run R1\n",
+		"asks:\n  - F2 answer: CSV or JSON?\n      answer: CSV\n              with headers\n      answered by pat at ")
+	asks, ok := history["asks"].([]any)
+	if !ok || len(asks) != 1 {
+		t.Fatalf("asks = %#v", history["asks"])
+	}
+	ask, ok := asks[0].(map[string]any)
+	if !ok {
+		t.Fatalf("ask = %#v", asks[0])
+	}
+	at, ok := ask["answered_at"].(string)
+	when, err := time.Parse(time.RFC3339Nano, at)
+	if !ok || err != nil || !strings.HasSuffix(at, "Z") || when.Before(start) || when.After(time.Now()) {
+		t.Fatalf("answered_at = %q", at)
+	}
+	want := emptyHistory()
+	want["reason"], want["previous_run"] = "answered_ask", "R1"
+	want["asks"] = []any{map[string]any{"id": "F2", "type": "answer", "question": "CSV or JSON?", "answer": "CSV\nwith headers", "answered_by": "pat", "answered_at": at}}
+	if !reflect.DeepEqual(history, want) {
+		t.Fatalf("history = %#v, want %#v", history, want)
+	}
+}
+
+func (e *env) submittedBrief() map[string]any {
+	e.t.Helper()
+	e.ok("laptop", "next", "--runner", "laptop")
+	e.ok("laptop", "submit", "R1", "--branch", "metronome/I1.1")
+	e.ok("github", "github", "pr-opened", "--slice", "I1.1", "--repo", "acme/app", "--number", "7", "--head", "abc123")
+	want := emptyHistory()
+	want["previous_run"], want["branch"], want["rework"] = "R1", "metronome/I1.1", true
+	want["pr"] = map[string]any{"repo": "acme/app", "number": float64(7), "head_sha": "abc123"}
+	return want
+}
+
+func TestNextReworkAfterFailedChecks(t *testing.T) {
+	e := newBriefEnv(t)
+	want := e.submittedBrief()
+	e.ok("github", "github", "checks", "--slice", "I1.1", "--head", "abc123", "--failure")
+	want["reason"], want["rework_reason"], want["failed_head"] = "checks_failed", "checks_failed", "abc123"
+	history := e.resumedBrief("resume", "resume:    checks failed on abc123\n", "rework:    checks failed on abc123\n", "previous:  run R1, branch metronome/I1.1, PR acme/app#7 at abc123\n")
+	if !reflect.DeepEqual(history, want) {
+		t.Fatalf("history = %#v, want %#v", history, want)
+	}
+	e.ok("cloud", "drop", "R2")
+	want["reason"], want["previous_run"] = "dropped", "R2"
+	history = e.resumedBrief("after-drop", "resume:    run R2 was dropped\n", "rework:    checks failed on abc123\n")
+	if !reflect.DeepEqual(history, want) {
+		t.Fatalf("history = %#v, want %#v", history, want)
+	}
+}
+
+func TestNextReworkAfterChangeRequest(t *testing.T) {
+	e := newBriefEnv(t)
+	want := e.submittedBrief()
+	e.ok("github", "github", "checks", "--slice", "I1.1", "--head", "abc123", "--success")
+	e.ok("github", "github", "ready-for-review", "--slice", "I1.1")
+	e.ok("github", "github", "changes-requested", "--slice", "I1.1", "--by", "rev")
+	want["reason"], want["rework_reason"], want["changes_requested_by"] = "changes_requested", "changes_requested", "rev"
+	history := e.resumedBrief("resume", "resume:    changes requested by rev\n", "rework:    changes requested by rev\n")
+	if !reflect.DeepEqual(history, want) {
+		t.Fatalf("history = %#v, want %#v", history, want)
+	}
+	e.ok("cloud", "submit", "R2", "--branch", "metronome/I1.1")
+	out := e.ok("pat", "board", "--json")
+	if e.board().Slices[0].Rework || strings.Contains(out, `"rework_reason"`) {
+		t.Fatalf("rework not cleared on submit: %s", out)
 	}
 }
 
@@ -198,19 +296,21 @@ func TestNextWithoutIntent(t *testing.T) {
 func TestNextFailsWithoutPartialBrief(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
+		path   string
 		status int
 		body   string
 		want   string
 	}{
-		{"board read fails", http.StatusServiceUnavailable, "unavailable", "unavailable"},
-		{"slice missing", http.StatusOK, `{}`, "slice I1.1 missing from board"},
-		{"item missing", http.StatusOK, `{"slices":[{"id":"I1.1","item_id":"I1"}]}`, "item I1 missing from board"},
+		{"board read fails", "/v1/board", http.StatusServiceUnavailable, "unavailable", "unavailable"},
+		{"slice missing", "/v1/board", http.StatusOK, `{}`, "slice I1.1 missing from board"},
+		{"item missing", "/v1/board", http.StatusOK, `{"slices":[{"id":"I1.1","item_id":"I1"}]}`, "item I1 missing from board"},
+		{"history read fails", "/v1/runs/R1/history", http.StatusServiceUnavailable, "unavailable", "unavailable"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e := newBriefEnv(t)
 			handler := e.http.Transport.(handlerTransport).h
 			e.http.Transport = handlerTransport{http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.Method == http.MethodGet && r.URL.Path == "/v1/board" {
+				if r.Method == http.MethodGet && r.URL.Path == tc.path {
 					w.WriteHeader(tc.status)
 					_, _ = io.WriteString(w, tc.body)
 					return
