@@ -327,7 +327,7 @@ func (s *State) apply(e Event) error {
 		}
 		sl.PR.HeadSHA, sl.PR.ChecksGreen, sl.PR.ChecksRecorded = p.HeadSHA, p.Success, true
 		sl.Version++
-		if !p.Success && (sl.Status == SlicePROpen || sl.Status == SliceSubmitted) {
+		if !p.Success && (sl.Status == SlicePROpen || sl.Status == SliceSubmitted || sl.Status == SliceInReview) {
 			sl.Status, sl.Rework, sl.StalledAt = SliceStalled, true, e.At
 		}
 	case EvPRReadyForReview:

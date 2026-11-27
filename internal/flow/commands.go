@@ -350,6 +350,9 @@ func (e *Engine) ChecksCompleted(ctx context.Context, actor, requestID, sliceID,
 		if err != nil {
 			return err
 		}
+		if headSHA != sl.PR.HeadSHA {
+			return fail(CodeConflict, "checks are for %s but the PR head is %s", headSHA, sl.PR.HeadSHA)
+		}
 		d.emit(EvChecksCompleted, checksCompleted{SliceID: sl.ID, HeadSHA: headSHA, Success: success})
 		return nil
 	})

@@ -129,7 +129,7 @@ func Reconcile(sl flow.Slice, snap *Snapshot) (actions []Action, notes []string)
 			add("checks", fmt.Sprintf("checks:%s:%s:v%d", snap.HeadSHA, snap.HeadChecks, sl.Version), req)
 			recorded.ChecksRecorded, recorded.ChecksGreen = true, success
 		}
-		if !success && status == flow.SlicePROpen {
+		if !success && (status == flow.SlicePROpen || status == flow.SliceInReview) {
 			return actions, notes
 		}
 	case ChecksNone:

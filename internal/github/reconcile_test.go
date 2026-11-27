@@ -76,6 +76,8 @@ func TestReconcile(t *testing.T) {
 		{"no PR for the branch records nothing", submitted(), nil, nil, ""},
 		{"checks already recorded for the head are not recorded again", inReview("aaa"), open("aaa", ChecksSuccess), nil, ""},
 		{"a check result that changes on the same head is recorded", inReview("aaa"), open("aaa", ChecksFailure), []string{"checks"}, ""},
+		{"red checks on the head of a slice in review stop the poll at the failure", inReview("aaa"), open("aaa", ChecksFailure, review("r1", "rev", ReviewChangesRequested, "aaa", 1)), []string{"checks"}, ""},
+		{"a new red head in review is recorded with its failure", inReview("aaa"), open("bbb", ChecksFailure), []string{"pr-opened", "checks"}, ""},
 		{"an approval on the head from a named approver approves", inReview("aaa"), open("aaa", ChecksSuccess, review("r1", "rev", ReviewApproved, "aaa", 1)), []string{"approved"}, ""},
 		{"an approval from someone not named is ignored", inReview("aaa"), open("aaa", ChecksSuccess, review("r1", "other", ReviewApproved, "aaa", 1)), nil, ""},
 		{"a comment is never an approval", inReview("aaa"), open("aaa", ChecksSuccess, review("r1", "rev", ReviewCommented, "aaa", 1)), nil, ""},
