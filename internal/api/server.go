@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 	"sort"
 	"strconv"
 
@@ -103,6 +104,9 @@ type server struct {
 func Handler(eng *flow.Engine) http.Handler {
 	s := &server{eng: eng}
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /{$}", asset("index.html", "text/html; charset=utf-8"))
+	mux.HandleFunc("GET /board.js", asset("board.js", "text/javascript; charset=utf-8"))
+	mux.HandleFunc("GET /board.css", asset("board.css", "text/css; charset=utf-8"))
 	mux.HandleFunc("GET /v1/board", s.board)
 	mux.HandleFunc("GET /v1/workstreams", func(w http.ResponseWriter, r *http.Request) {
 		eng.View(func(st *flow.State) { writeJSON(w, http.StatusOK, st.WorkstreamViews()) })
@@ -135,6 +139,7 @@ func Handler(eng *flow.Engine) http.Handler {
 	}))
 	mux.HandleFunc("GET /v1/inbox/{owner}", s.inbox)
 	mux.HandleFunc("GET /v1/events", s.events)
+	mux.HandleFunc("GET /v1/runs/{id}/history", s.history)
 	mux.HandleFunc("POST /v1/tick", s.tick)
 	mux.HandleFunc("POST /v1/backlog/sync", command(func(r *http.Request, c call, req BacklogRequest) (flow.Result, error) {
 		return eng.SyncBacklog(r.Context(), c.actor, c.requestID, req.Workstream, req.Items)
@@ -234,6 +239,15 @@ func command[T any](fn func(r *http.Request, c call, req T) (flow.Result, error)
 
 func (s *server) board(w http.ResponseWriter, r *http.Request) {
 	ws := r.URL.Query().Get("workstream")
+	var label string
+	if r.URL.Query().Has("label") {
+		var err error
+		label, err = flow.NormaliseLabel(r.URL.Query().Get("label"))
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+	}
 	found := false
 	b := Board{Limits: s.eng.Config().Limits, Items: []flow.Item{}, Slices: []flow.Slice{}, Runs: []flow.Run{}, Flags: []flow.Flag{}}
 	s.eng.View(func(st *flow.State) {
@@ -247,20 +261,23 @@ func (s *server) board(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		b.Usage = st.Usage()
+		keptItems, keptSlices := map[string]bool{}, map[string]bool{}
 		for _, it := range st.Items {
-			if ws != "" && it.Workstream != ws {
+			if (ws != "" && it.Workstream != ws) || (label != "" && !slices.Contains(it.Labels, label)) {
 				continue
 			}
+			keptItems[it.ID] = true
 			b.Items = append(b.Items, *it)
 		}
 		for _, sl := range st.Slices {
-			if ws != "" && sl.Workstream != ws {
+			if !keptItems[sl.ItemID] {
 				continue
 			}
+			keptSlices[sl.ID] = true
 			b.Slices = append(b.Slices, *sl)
 		}
 		for _, r := range st.Runs {
-			if ws != "" && st.Slices[r.SliceID].Workstream != ws {
+			if !keptSlices[r.SliceID] {
 				continue
 			}
 			if !r.Closed {
@@ -268,13 +285,11 @@ func (s *server) board(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		for _, f := range st.Flags {
-			if ws != "" {
-				if f.Subject.Kind == flow.SubjectItem && st.Items[f.Subject.ID].Workstream != ws {
-					continue
-				}
-				if f.Subject.Kind == flow.SubjectSlice && st.Slices[f.Subject.ID].Workstream != ws {
-					continue
-				}
+			if f.Subject.Kind == flow.SubjectItem && !keptItems[f.Subject.ID] {
+				continue
+			}
+			if f.Subject.Kind == flow.SubjectSlice && !keptSlices[f.Subject.ID] {
+				continue
 			}
 			if !f.Closed {
 				b.Flags = append(b.Flags, *f)
@@ -290,6 +305,21 @@ func (s *server) board(w http.ResponseWriter, r *http.Request) {
 	sort.Slice(b.Runs, func(i, j int) bool { return idLess(b.Runs[i].ID, b.Runs[j].ID) })
 	sort.Slice(b.Flags, func(i, j int) bool { return idLess(b.Flags[i].ID, b.Flags[j].ID) })
 	writeJSON(w, http.StatusOK, b)
+}
+
+func (s *server) history(w http.ResponseWriter, r *http.Request) {
+	var history *flow.SliceHistory
+	s.eng.View(func(st *flow.State) {
+		if run := st.Runs[r.PathValue("id")]; run != nil {
+			snapshot := run.History
+			history = &snapshot
+		}
+	})
+	if history == nil {
+		writeError(w, &flow.Error{Code: flow.CodeNotFound, Message: "unknown run " + strconv.Quote(r.PathValue("id"))})
+		return
+	}
+	writeJSON(w, http.StatusOK, history)
 }
 
 func (s *server) inbox(w http.ResponseWriter, r *http.Request) {

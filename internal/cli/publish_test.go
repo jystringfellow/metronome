@@ -43,7 +43,7 @@ func TestPublisherCommandFailureResumeAndBatch(t *testing.T) {
 	result := filepath.Join(e.dir, "result.jsonl")
 	counts := filepath.Join(e.dir, "counts")
 	base = []string{"publish", "--workstream", "example", "--name", "board", "--batch", "2", "--"}
-	output = e.ok("pat", append(base, "sh", "-c", `test "$METRONOME_WORKSTREAM" = example && test "$METRONOME_PUBLISHER" = board && test "$(cat "$METRONOME_PUBLISHER_STATE")" = '{"saved":true}' || exit 9; cat > "$2.batch"; wc -l < "$2.batch" >> "$2"; cat "$2.batch" >> "$1"`, "sh", result, counts)...)
+	output = e.ok("pat", append(base, "sh", "-c", `test "$METRONOME_WORKSTREAM" = example && test "$METRONOME_PUBLISHER" = board && test "$(cat "$METRONOME_PUBLISHER_STATE")" = '{"saved":true}' || exit 9; cat > "$2.batch"; wc -l < "$2.batch" | tr -d " " >> "$2"; cat "$2.batch" >> "$1"`, "sh", result, counts)...)
 	data, err := os.ReadFile(result)
 	if err != nil || !strings.HasPrefix(string(data), string(first)) {
 		t.Fatal(string(data), err, output)

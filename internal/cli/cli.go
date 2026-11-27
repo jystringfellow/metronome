@@ -21,6 +21,7 @@ import (
 	"github.com/jystringfellow/metronome/internal/flow"
 	"github.com/jystringfellow/metronome/internal/github"
 	"github.com/jystringfellow/metronome/internal/store"
+	"github.com/mattn/go-isatty"
 )
 
 const defaultServer = "http://127.0.0.1:7340"
@@ -28,10 +29,10 @@ const defaultServer = "http://127.0.0.1:7340"
 const usage = `metronome: a flow record for AI delivery work
 
 Service:
-  serve [--addr 127.0.0.1:7340] [--db metronome.db] [--tick 30s]
+  serve [--addr 127.0.0.1:7340] [--db metronome.db] [--tick 30s]  also serves a read-only board page at /
 
 Looking:
-  board [--workstream NAME] [--json]  limits, usage, items, slices, open runs and asks
+  board [--workstream NAME] [--label L] [--json]  limits, usage, items, slices, open runs and asks
   inbox OWNER                     open asks for one person, oldest first
   events [--after SEQ]            the event log
 
@@ -43,7 +44,7 @@ Workstreams:
 Backlog and plan:
   backlog sync [--workstream NAME] FILE  add ranked items (default workstream if omitted)
                          skips items with "claimed_by" set
-                         items may carry "slices" (as plan propose) and an optional "predicted_tier" (default 1); see docs/backlog.md
+                         items may carry "labels", "slices" (as plan propose) and an optional "predicted_tier" (default 1); see docs/backlog.md
   intake --workstream NAME [--every D] -- CMD [ARGS...]  mirror Ready from a source command; see docs/intake.md
   publish --workstream NAME --name PUBLISHER [--every D] [--batch N] -- CMD [ARGS...]
                          mirror transitions to a publisher command; see docs/intake.md
@@ -55,7 +56,8 @@ Backlog and plan:
   plan drop ITEM
 
 Runners (the connector operations):
-  next --runner ID [--workstream NAME] [--slice S]  claim the next slice whose dependencies have merged (next_work)
+  next --runner ID [--workstream NAME] [--slice S] [--json]  claim the next slice whose dependencies have merged and print its brief (next_work)
+  run --runner ID [--workstream NAME] [--slice S] [--every 5m] -- CMD [ARGS...]  claim, run CMD with its brief, renew, submit or drop
   report RUN [--note TEXT]        renew the lease (heartbeat)
   ask (--run R | --item I | --slice S) --type ASK --question TEXT [--owner WHO]
   submit RUN --branch BRANCH      the work will arrive on BRANCH
@@ -93,6 +95,7 @@ type app struct {
 	issues      github.IssueSource
 	projects    github.ProjectBoard
 	stdin       io.Reader
+	terminal    func() bool
 }
 
 type Deps struct {
@@ -101,6 +104,7 @@ type Deps struct {
 	Issues   github.IssueSource
 	Projects github.ProjectBoard
 	Stdin    io.Reader
+	Terminal func() bool
 }
 
 func Run(ctx context.Context, args []string, out, errOut io.Writer) int {
@@ -127,6 +131,9 @@ func RunWithDeps(ctx context.Context, args []string, out, errOut io.Writer, deps
 	if deps.Stdin == nil {
 		deps.Stdin = os.Stdin
 	}
+	if deps.Terminal == nil {
+		deps.Terminal = func() bool { return isatty.IsTerminal(os.Stdin.Fd()) }
+	}
 	global := flag.NewFlagSet("metronome", flag.ContinueOnError)
 	global.SetOutput(errOut)
 	global.Usage = func() { fmt.Fprint(errOut, usage) }
@@ -141,9 +148,13 @@ func RunWithDeps(ctx context.Context, args []string, out, errOut io.Writer, deps
 		global.Usage()
 		return 2
 	}
-	a := &app{out: out, errOut: errOut, requestID: *requestID, prs: deps.GitHub, issues: deps.Issues, projects: deps.Projects, stdin: deps.Stdin,
+	a := &app{out: out, errOut: errOut, requestID: *requestID, prs: deps.GitHub, issues: deps.Issues, projects: deps.Projects, stdin: deps.Stdin, terminal: deps.Terminal,
 		client: &api.Client{BaseURL: *server, Actor: *actor, HTTP: deps.HTTP}}
 	if err := a.dispatch(ctx, rest[0], rest[1:]); err != nil {
+		var status exitStatus
+		if errors.As(err, &status) {
+			return int(status)
+		}
 		var ue usageError
 		if errors.As(err, &ue) {
 			fmt.Fprintf(errOut, "metronome %s: %s\n", rest[0], ue.msg)
@@ -190,6 +201,8 @@ func (a *app) dispatch(ctx context.Context, cmd string, args []string) error {
 		return a.plan(ctx, args)
 	case "next":
 		return a.next(ctx, args)
+	case "run":
+		return a.run(ctx, args)
 	case "report":
 		return a.report(ctx, args)
 	case "ask":
@@ -267,12 +280,19 @@ func (a *app) serve(ctx context.Context, args []string) error {
 func (a *app) board(ctx context.Context, args []string) error {
 	fs := newFlags("board")
 	ws := fs.String("workstream", "", "")
+	label := fs.String("label", "", "")
 	asJSON := fs.Bool("json", false, "")
 	if err := parse(fs, args, 0); err != nil {
 		return err
 	}
 	var b api.Board
-	if err := a.client.Get(ctx, "/v1/board?workstream="+url.QueryEscape(*ws), &b); err != nil {
+	query := url.Values{"workstream": {*ws}}
+	fs.Visit(func(option *flag.Flag) {
+		if option.Name == "label" {
+			query.Set("label", *label)
+		}
+	})
+	if err := a.client.Get(ctx, "/v1/board?"+query.Encode(), &b); err != nil {
 		return err
 	}
 	if *asJSON {
@@ -288,7 +308,7 @@ func (a *app) board(ctx context.Context, args []string) error {
 		l, u := ws.Limits, ws.Usage
 		fmt.Fprintf(a.out, "workstream %s  ready %d/%d  plan %d/%d  execute %d/%d  review %d/%d  release %d/%d\n", ws.Name, u.Ready, l.Ready, u.Plan, l.Plan, u.Execute, l.Execute, u.Review, l.Review, u.Release, l.Release)
 		tw := tabwriter.NewWriter(a.out, 0, 2, 2, ' ', 0)
-		fmt.Fprintln(tw, "\nITEM\tSTATUS\tTIER\tOWNER\tTITLE")
+		fmt.Fprintln(tw, "\nITEM\tSTATUS\tTIER\tOWNER\tLABELS\tTITLE")
 		for _, it := range b.Items {
 			if it.Workstream != ws.Name {
 				continue
@@ -296,7 +316,7 @@ func (a *app) board(ctx context.Context, args []string) error {
 			if it.Status == flow.ItemDone || it.Status == flow.ItemDropped || it.Status == flow.ItemShelved {
 				continue
 			}
-			fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%s\n", it.ID, it.Status, it.PredictedTier, it.Owner, it.Title)
+			fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%s\t%s\n", it.ID, it.Status, it.PredictedTier, it.Owner, dash(strings.Join(it.Labels, ", ")), it.Title)
 		}
 		fmt.Fprintln(tw, "\nSLICE\tSTATUS\tSLOTS\tRUN\tPR\tTITLE")
 		for _, sl := range b.Slices {
@@ -466,23 +486,226 @@ func (a *app) next(ctx context.Context, args []string) error {
 	runner := fs.String("runner", "", "")
 	slice := fs.String("slice", "", "")
 	ws := fs.String("workstream", "", "")
+	asJSON := fs.Bool("json", false, "")
 	if err := parse(fs, args, 0); err != nil {
 		return err
 	}
 	if *runner == "" {
 		return usagef("--runner ID is required")
 	}
-	var res flow.Result
-	if err := a.client.Post(ctx, "/v1/claims", a.requestID, api.ClaimRequest{RunnerID: *runner, SliceID: *slice, Workstream: *ws}, &res); err != nil {
+	b, err := a.claim(ctx, *runner, *slice, *ws)
+	if err != nil {
 		return err
+	}
+	if *asJSON {
+		return writeJSON(a.out, b)
+	}
+	return b.writeText(a.out)
+}
+
+func (a *app) claim(ctx context.Context, runner, slice, workstream string) (brief, error) {
+	var res flow.Result
+	if err := a.client.Post(ctx, "/v1/claims", a.requestID, api.ClaimRequest{RunnerID: runner, SliceID: slice, Workstream: workstream}, &res); err != nil {
+		return brief{}, err
 	}
 	c, ok := flow.ClaimFrom(res)
 	if !ok {
-		return fmt.Errorf("the claim returned no run")
+		return brief{}, fmt.Errorf("the claim returned no run")
 	}
-	fmt.Fprintf(a.out, "run %s claimed slice %s; lease until %s\n", c.RunID, c.SliceID, c.LeaseUntil.Local().Format(time.Kitchen))
-	fmt.Fprintf(a.out, "workstream: %s\n", c.Workstream)
-	return nil
+	b, err := a.readBrief(ctx, c)
+	if err != nil {
+		return brief{Claim: briefClaim{Workstream: c.Workstream, RunID: c.RunID, SliceID: c.SliceID, LeaseUntil: c.LeaseUntil.UTC()}}, fmt.Errorf("run %s claimed slice %s, but its brief could not be read: %w", c.RunID, c.SliceID, err)
+	}
+	return b, nil
+}
+
+type brief struct {
+	Claim   briefClaim   `json:"claim"`
+	Slice   briefSlice   `json:"slice"`
+	Item    briefItem    `json:"item"`
+	History briefHistory `json:"history"`
+}
+
+type briefClaim struct {
+	Workstream string    `json:"workstream"`
+	RunID      string    `json:"run_id"`
+	SliceID    string    `json:"slice_id"`
+	LeaseUntil time.Time `json:"lease_until"`
+}
+
+type briefSlice struct {
+	ID        string   `json:"id"`
+	Repo      string   `json:"repo"`
+	Title     string   `json:"title"`
+	Criteria  []string `json:"criteria"`
+	Approvers []string `json:"approvers"`
+}
+
+type briefItem struct {
+	ID     string   `json:"id"`
+	Ref    string   `json:"ref"`
+	Title  string   `json:"title"`
+	Intent string   `json:"intent"`
+	Labels []string `json:"labels"`
+}
+
+type briefHistory struct {
+	Reason             string     `json:"reason"`
+	Rework             bool       `json:"rework"`
+	ReworkReason       string     `json:"rework_reason"`
+	FailedHead         string     `json:"failed_head"`
+	ChangesRequestedBy string     `json:"changes_requested_by"`
+	PreviousRun        string     `json:"previous_run"`
+	Branch             string     `json:"branch"`
+	PR                 *briefPR   `json:"pr"`
+	Asks               []briefAsk `json:"asks"`
+}
+
+type briefPR struct {
+	Repo    string `json:"repo"`
+	Number  int    `json:"number"`
+	HeadSHA string `json:"head_sha"`
+}
+
+type briefAsk struct {
+	ID         string       `json:"id"`
+	Type       flow.AskType `json:"type"`
+	Question   string       `json:"question"`
+	Answer     string       `json:"answer"`
+	AnsweredBy string       `json:"answered_by"`
+	AnsweredAt time.Time    `json:"answered_at"`
+}
+
+func newBriefHistory(snapshot flow.SliceHistory) briefHistory {
+	history := briefHistory{Reason: snapshot.Reason, Rework: snapshot.Rework, ReworkReason: snapshot.ReworkReason,
+		FailedHead: snapshot.FailedHead, ChangesRequestedBy: snapshot.ChangesRequestedBy,
+		PreviousRun: snapshot.PreviousRun, Branch: snapshot.Branch, Asks: []briefAsk{}}
+	if snapshot.PR != nil {
+		pr := briefPR(*snapshot.PR)
+		history.PR = &pr
+	}
+	for _, ask := range snapshot.Asks {
+		answer := briefAsk(ask)
+		answer.AnsweredAt = answer.AnsweredAt.UTC()
+		history.Asks = append(history.Asks, answer)
+	}
+	return history
+}
+
+func (a *app) readBrief(ctx context.Context, c flow.Claim) (brief, error) {
+	var board api.Board
+	if err := a.client.Get(ctx, "/v1/board", &board); err != nil {
+		return brief{}, err
+	}
+	for _, sl := range board.Slices {
+		if sl.ID != c.SliceID {
+			continue
+		}
+		for _, it := range board.Items {
+			if it.ID == sl.ItemID {
+				var snapshot flow.SliceHistory
+				if err := a.client.Get(ctx, "/v1/runs/"+c.RunID+"/history", &snapshot); err != nil {
+					return brief{}, err
+				}
+				return brief{
+					Claim: briefClaim{Workstream: c.Workstream, RunID: c.RunID, SliceID: c.SliceID, LeaseUntil: c.LeaseUntil.UTC()},
+					Slice: briefSlice{ID: sl.ID, Repo: sl.Repo, Title: sl.Title,
+						Criteria: append([]string{}, sl.Criteria...), Approvers: append([]string{}, sl.Approvers...)},
+					Item:    briefItem{ID: it.ID, Ref: it.Ref, Title: it.Title, Intent: it.Intent, Labels: append([]string{}, it.Labels...)},
+					History: newBriefHistory(snapshot),
+				}, nil
+			}
+		}
+		return brief{}, fmt.Errorf("item %s missing from board", sl.ItemID)
+	}
+	return brief{}, fmt.Errorf("slice %s missing from board", c.SliceID)
+}
+
+func (b brief) writeText(w io.Writer) error {
+	var text strings.Builder
+	fmt.Fprintf(&text, "run %s claimed slice %s; lease until %s\n", b.Claim.RunID, b.Claim.SliceID, b.Claim.LeaseUntil.Local().Format(time.Kitchen))
+	fmt.Fprintf(&text, "workstream: %s\n", b.Claim.Workstream)
+	fmt.Fprintf(&text, "slice:     %s %s\nrepo:      %s\n", b.Slice.ID, b.Slice.Title, b.Slice.Repo)
+	fmt.Fprintf(&text, "item:      %s %s (%s)\n", b.Item.Ref, b.Item.Title, b.Item.ID)
+	intent := b.Item.Intent
+	if intent == "" {
+		intent = "none given"
+	}
+	fmt.Fprintf(&text, "intent:    %s\n", strings.ReplaceAll(intent, "\n", "\n           "))
+	if len(b.Item.Labels) > 0 {
+		fmt.Fprintf(&text, "labels:    %s\n", strings.Join(b.Item.Labels, ", "))
+	}
+	if len(b.Slice.Criteria) == 0 {
+		fmt.Fprintln(&text, "criteria:  none given")
+	} else {
+		fmt.Fprintln(&text, "criteria:")
+		for _, criterion := range b.Slice.Criteria {
+			fmt.Fprintf(&text, "  - %s\n", strings.ReplaceAll(criterion, "\n", "\n    "))
+		}
+	}
+	if len(b.Slice.Approvers) > 0 {
+		fmt.Fprintf(&text, "approvers: %s\n", strings.Join(b.Slice.Approvers, ", "))
+	}
+	b.History.writeText(&text)
+	_, err := io.WriteString(w, text.String())
+	return err
+}
+
+func (h briefHistory) describe(reason string) string {
+	switch reason {
+	case "":
+		return "no earlier run"
+	case flow.ResumeChecksFailed:
+		return "checks failed on " + h.FailedHead
+	case flow.ResumeChangesRequested:
+		if h.ChangesRequestedBy != "" {
+			return "changes requested by " + h.ChangesRequestedBy
+		}
+		return "changes requested"
+	case flow.ResumeLeaseExpired:
+		return "lease expired on run " + h.PreviousRun
+	case flow.ResumeDropped:
+		return "run " + h.PreviousRun + " was dropped"
+	case flow.ResumeAnswered:
+		return "asks answered after run " + h.PreviousRun
+	case flow.ResumeAskTimedOut:
+		return "ask timed out unanswered after run " + h.PreviousRun
+	default:
+		return reason
+	}
+}
+
+func (h briefHistory) writeText(text *strings.Builder) {
+	fmt.Fprintf(text, "resume:    %s\n", h.describe(h.Reason))
+	if h.Rework {
+		fmt.Fprintf(text, "rework:    %s\n", h.describe(h.ReworkReason))
+	}
+	var previous []string
+	if h.PreviousRun != "" {
+		previous = append(previous, "run "+h.PreviousRun)
+	}
+	if h.Branch != "" {
+		previous = append(previous, "branch "+h.Branch)
+	}
+	if h.PR != nil {
+		previous = append(previous, fmt.Sprintf("PR %s#%d at %s", h.PR.Repo, h.PR.Number, h.PR.HeadSHA))
+	}
+	if len(previous) > 0 {
+		fmt.Fprintf(text, "previous:  %s\n", strings.Join(previous, ", "))
+	}
+	if len(h.Asks) > 0 {
+		fmt.Fprintln(text, "asks:")
+		for _, ask := range h.Asks {
+			prefix := fmt.Sprintf("  - %s %s: ", ask.ID, ask.Type)
+			fmt.Fprintf(text, "%s%s\n", prefix, strings.ReplaceAll(ask.Question, "\n", "\n"+strings.Repeat(" ", len(prefix))))
+			fmt.Fprintf(text, "      answer: %s\n", strings.ReplaceAll(ask.Answer, "\n", "\n              "))
+			fmt.Fprint(text, "      answered")
+			if ask.AnsweredBy != "" {
+				fmt.Fprintf(text, " by %s", ask.AnsweredBy)
+			}
+			fmt.Fprintf(text, " at %s\n", ask.AnsweredAt.Local().Format("2006-01-02 15:04"))
+		}
+	}
 }
 
 func (a *app) report(ctx context.Context, args []string) error {
