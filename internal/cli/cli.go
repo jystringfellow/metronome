@@ -64,6 +64,8 @@ People:
   release-done ITEM               finish the release of a tier 2 or 3 item
 
 GitHub:
+  github issues --repo OWNER/NAME [--label L] [--project OWNER/N [--rank-field Rank]] [--owner WHO]
+                         print backlog JSON from open labelled issues, for intake; see docs/intake.md
   github poll [--every 1m]        record what GitHub shows for each submitted slice's branch, once or on a repeat
   github pr-opened --slice S --repo OWNER/NAME --number N --head SHA
   github checks --slice S --head SHA (--success | --failure)
@@ -84,11 +86,13 @@ type app struct {
 	client      *api.Client
 	requestID   string
 	prs         github.Source
+	issues      github.IssueSource
 }
 
 type Deps struct {
 	HTTP   *http.Client
 	GitHub github.Source
+	Issues github.IssueSource
 }
 
 func Run(ctx context.Context, args []string, out, errOut io.Writer) int {
@@ -106,6 +110,9 @@ func RunWithDeps(ctx context.Context, args []string, out, errOut io.Writer, deps
 	if deps.GitHub == nil {
 		deps.GitHub = github.GH{}
 	}
+	if deps.Issues == nil {
+		deps.Issues = github.GH{}
+	}
 	global := flag.NewFlagSet("metronome", flag.ContinueOnError)
 	global.SetOutput(errOut)
 	global.Usage = func() { fmt.Fprint(errOut, usage) }
@@ -120,7 +127,7 @@ func RunWithDeps(ctx context.Context, args []string, out, errOut io.Writer, deps
 		global.Usage()
 		return 2
 	}
-	a := &app{out: out, errOut: errOut, requestID: *requestID, prs: deps.GitHub,
+	a := &app{out: out, errOut: errOut, requestID: *requestID, prs: deps.GitHub, issues: deps.Issues,
 		client: &api.Client{BaseURL: *server, Actor: *actor, HTTP: deps.HTTP}}
 	if err := a.dispatch(ctx, rest[0], rest[1:]); err != nil {
 		var ue usageError
@@ -533,6 +540,9 @@ func (a *app) github(ctx context.Context, args []string) error {
 	event, args := args[0], args[1:]
 	if event == "poll" {
 		return a.githubPoll(ctx, args)
+	}
+	if event == "issues" {
+		return a.githubIssues(ctx, args)
 	}
 	fs := newFlags("github " + event)
 	var req api.GitHubRequest

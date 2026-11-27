@@ -44,6 +44,7 @@ Refill adds items only when Ready is below the refill threshold, up to the works
 Known references are skipped in their entirety, including any new slices or tier in the request.
 `backlog sync` also skips and reports items with `claimed_by` set. For an actual mirror rather than
 add-only refill, use [intake](intake.md), which requires an explicit workstream and a non-null `items` array.
+The built-in `metronome github issues` command produces this contract; see [GitHub Issues intake](intake.md#built-in-github-issues).
 `plan start` proposes pre-planned slices and raises an approval ask for the owner. A person can replace
 the proposal with `plan propose`. `plan approve ITEM [--tier N]` approves the plan and confirms the tier;
 without `--tier`, the predicted tier is confirmed.

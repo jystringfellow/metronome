@@ -284,7 +284,40 @@ Recorded so the data model leaves room for it. Nothing here is in the proof of c
 - Should shelved items expire?
 - Should an intake command have a timeout?
 - On merge with main, link `docs/intake.md` from `docs/runners.md` and list it alongside `docs/backlog.md`
-  as an additive-only contract. This branch lacks the runners guide; do not create a conflicting stub.
+  as an additive-only contract; also point to the built-in GitHub Issues source. This branch lacks the
+  runners guide; do not create a conflicting stub.
+
+## Decided by the maintainer (2026-11-27): a GitHub Issues intake command
+
+- `github issues --repo OWNER/NAME [--label L] [--project OWNER/N --rank-field Rank] [--owner WHO]`
+  reads open labelled issues via `gh`, default label `metronome`, and prints the backlog contract.
+- Order by numeric project rank with unranked last, or oldest first without a project.
+- Ref is `OWNER/NAME#N` unless a `Metronome: REF` line preserves the existing reference. Map title, body intent,
+  first assignee or fallback owner, and optional `tier:N` label; supply one pre-planned slice in the issue's
+  repository, with criteria from a task list or Acceptance criteria section. Skip pull requests and non-issue project items.
+
+## Agent decision (2026-11-27): implementing GitHub Issues intake
+
+- Paginate REST issues and typed GraphQL number fields to avoid truncation and guessing at project field keys.
+  Fail on missing or nonnumeric fields and incomplete reads. Default the rank field to `Rank`, require a project
+  when specifying it, and reject comma-separated labels (the REST filter would mean AND).
+- Sort ranks ascending to match Metronome, breaking ties by creation time then issue number.
+- Use the first prose paragraph, collapsed and capped at 500 runes, for one-line intent. Ignore template comments
+  and fenced code. Match the ref marker case-insensitively outside fences; prefer an acceptance section over
+  task lists, join wrapped items and retain checked tasks so authored criteria survive import.
+- Agent follow-up (2026-11-27, gate 1): strip only closed HTML comments and refuse backtick fence openings
+  whose info string contains a backtick, so literal Markdown examples do not discard subsequent refs or criteria.
+- Missing owners, invalid or conflicting tiers, invalid issue identity and duplicate refs fail the entire read
+  with per-issue errors, rather than silently omitting work. Validate repository names to avoid malformed REST paths.
+- The command adds no events, contacts no tracker, sets no value or claim marker, and leaves approvers empty
+  (the existing default review rule applies). Existing approval gates remain unchanged.
+
+## Open (2026-11-27): GitHub Issues intake follow-up
+
+- Should an assignee or label mark an external claim when multiple instances share a repository?
+- Should approvers or multiple slices (such as sub-issues) come from the issue?
+- Should value come from a project field?
+- Should the label filter support multiple labels (OR)?
 
 ## Decided by the maintainer (2026-11-27): slices can depend on other slices
 
