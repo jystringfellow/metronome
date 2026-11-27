@@ -3,6 +3,25 @@
 This file records what has been decided about Metronome, what the review of SPEC.md found, and what is still
 open.
 
+## Decided (2026-11-27): what the brief tells a resuming runner
+
+- Maintainer's decision: add rework status and reason, the previous branch and PR, and answered asks to the
+  brief, additively.
+- Agent's decisions:
+  - Add a `history` section with `reason`, `rework`, `rework_reason`, `failed_head`, `changes_requested_by`,
+    `previous_run`, `branch`, `pr` and `asks`, leaving existing brief fields unchanged.
+  - Use resume reasons `checks_failed`, `changes_requested`, `lease_expired`, `dropped`, `answered_ask` and
+    `ask_timed_out` (empty for fresh work). Include `ask_timed_out` so a runner can distinguish a timeout
+    from an answer. Keep the rework reason and associated evidence until the next submit, so interruption
+    does not obscure the original reason for rework.
+  - Use `null` for an absent PR and `[]` for no answered asks. List only resolved slice asks, in raised
+    order, because a timeout is not a decision and an item ask is not specific to the slice. Take the
+    answerer and answer time from the `flag_resolved` event envelope.
+  - Derive state from existing events so old logs replay without migration. Snapshot history when the
+    claim is applied, so a repeated request for the same run reads the same history even after submit.
+  - Read that snapshot via `GET /v1/runs/{id}/history`. This extends the earlier choice of no new endpoint
+    for the slice brief: the board omits closed asks, and live slice history can change after a claim.
+
 ## Decided (2026-11-27): the board page
 
 - Maintainer's decision: on 2026-11-27 the maintainer asked for a way to watch work being picked up and
@@ -276,8 +295,8 @@ Everything section 12 of SPEC.md marks Open or Unverified, plus:
   address. How to protect the page and API when hosted with OIDC sign-in remains undecided.
 - 2026-11-27: whether to add a tail query to the events feed once logs grow, to avoid reading the whole log
   on first load.
-- 2026-11-27: the runner brief does not include ask answers, rework status or the previous branch. How to
-  include this context in the handoff to a runner resuming a slice is undecided.
+- 2026-11-27: whether to list item-level asks and timed-out asks in the runner brief.
+- 2026-11-27: whether to record the head SHA a change request reviewed; this needs a new event payload field.
 - 2026-11-27: terminal Ctrl-C signals the foreground process group, so the wrapped command may receive SIGINT
   twice (directly and forwarded). Whether to suppress forwarding when stdin is a terminal or use a separate
   process group is undecided.

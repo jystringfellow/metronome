@@ -3,6 +3,7 @@ package flow_test
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"testing"
 	"time"
 
@@ -94,6 +95,12 @@ func (h *harness) claim(runner string) flow.Claim {
 func (h *harness) slice(id string) flow.Slice {
 	var out flow.Slice
 	h.eng.View(func(s *flow.State) { out = *s.Slices[id] })
+	return out
+}
+
+func (h *harness) history(id string) flow.SliceHistory {
+	var out flow.SliceHistory
+	h.eng.View(func(s *flow.State) { out = s.Runs[id].History })
 	return out
 }
 
@@ -218,6 +225,9 @@ func TestLeaseExpiryStallsThenStallTimeoutParks(t *testing.T) {
 	if c2.SliceID != c.SliceID {
 		t.Fatalf("cloud claimed %s, want the stalled slice %s", c2.SliceID, c.SliceID)
 	}
+	if history := h.history(c2.RunID); history.Reason != flow.ResumeLeaseExpired || history.PreviousRun != c.RunID {
+		t.Fatalf("history after lease expiry = %+v", history)
+	}
 	h.clock.advance(h.cfg.Lease + h.cfg.StallTimeout)
 	h.ok(h.eng.Tick(ctx()))
 	sl = h.slice(c.SliceID)
@@ -229,6 +239,8 @@ func TestLeaseExpiryStallsThenStallTimeoutParks(t *testing.T) {
 	}
 	if again := h.claim("cloud"); again.SliceID != c.SliceID {
 		t.Fatalf("next claim = %s, want parked slice %s at the front", again.SliceID, c.SliceID)
+	} else if history := h.history(again.RunID); history.Reason != flow.ResumeLeaseExpired || history.PreviousRun != c2.RunID {
+		t.Fatalf("history after park = %+v", history)
 	}
 }
 
@@ -278,6 +290,10 @@ func TestUnansweredRunnerAskParksTheSlice(t *testing.T) {
 	sl := h.slice(c.SliceID)
 	if sl.Status != flow.SliceQueued || sl.HoldsExecute || sl.HoldsReview {
 		t.Fatalf("slice after ask timeout = %+v, want parked", sl)
+	}
+	history := h.history(h.claim("cloud").RunID)
+	if history.Reason != flow.ResumeAskTimedOut || history.PreviousRun != c.RunID || history.Asks == nil || len(history.Asks) != 0 {
+		t.Fatalf("history after ask timeout = %+v", history)
 	}
 }
 
@@ -444,5 +460,40 @@ func TestStateIsRebuiltFromTheEventLog(t *testing.T) {
 	}
 	if next := h.claim("cloud"); next.RunID == c.RunID {
 		t.Fatal("run ids must keep counting after a replay")
+	}
+}
+
+func TestClaimHistoryIsRebuiltFromTheEventLog(t *testing.T) {
+	h := newHarness(t, nil)
+	h.backlog(1)
+	h.approvedItem("I1", 1)
+	first := h.claim("laptop")
+	h.ok(h.eng.FlagRun(ctx(), "laptop", "", first.RunID, flow.AskAnswer, "CSV or JSON?", ""))
+	h.clock.advance(time.Minute)
+	h.ok(h.eng.ResolveFlag(ctx(), "pat", "", "F2", "CSV"))
+	second := h.claim("cloud")
+	h.ok(h.eng.Submit(ctx(), "cloud", "", second.RunID, "metronome/I1.1"))
+	h.ok(h.eng.PROpened(ctx(), "github", "", second.SliceID, "acme/app", 7, "abc123"))
+	h.ok(h.eng.ChecksCompleted(ctx(), "github", "", second.SliceID, "abc123", false))
+	third := h.claim("cloud")
+	want := flow.SliceHistory{Reason: flow.ResumeChecksFailed, Rework: true, ReworkReason: flow.ResumeChecksFailed,
+		FailedHead: "abc123", PreviousRun: second.RunID, Branch: "metronome/I1.1",
+		PR:   &flow.HistoryPR{Repo: "acme/app", Number: 7, HeadSHA: "abc123"},
+		Asks: []flow.HistoryAsk{{ID: "F2", Type: flow.AskAnswer, Question: "CSV or JSON?", Answer: "CSV", AnsweredBy: "pat", AnsweredAt: h.clock.Now()}}}
+	if history := h.history(third.RunID); !reflect.DeepEqual(history, want) {
+		t.Fatalf("history = %+v, want %+v", history, want)
+	}
+	h.ok(h.eng.ChecksCompleted(ctx(), "github", "", third.SliceID, "def456", true))
+	if history := h.history(third.RunID); !reflect.DeepEqual(history, want) {
+		t.Fatalf("history changed after PR update: %+v", history)
+	}
+	before := h.slice(third.SliceID)
+	histories := []flow.SliceHistory{h.history(first.RunID), h.history(second.RunID), h.history(third.RunID)}
+	h.eng = h.reload()
+	if after := h.slice(third.SliceID); !reflect.DeepEqual(after, before) {
+		t.Fatalf("slice after replay = %+v, want %+v", after, before)
+	}
+	if after := []flow.SliceHistory{h.history(first.RunID), h.history(second.RunID), h.history(third.RunID)}; !reflect.DeepEqual(after, histories) {
+		t.Fatalf("histories after replay = %+v, want %+v", after, histories)
 	}
 }

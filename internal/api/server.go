@@ -87,6 +87,7 @@ func Handler(eng *flow.Engine) http.Handler {
 	mux.HandleFunc("GET /v1/board", s.board)
 	mux.HandleFunc("GET /v1/inbox/{owner}", s.inbox)
 	mux.HandleFunc("GET /v1/events", s.events)
+	mux.HandleFunc("GET /v1/runs/{id}/history", s.history)
 	mux.HandleFunc("POST /v1/tick", s.tick)
 	mux.HandleFunc("POST /v1/backlog/sync", command(func(r *http.Request, c call, req BacklogRequest) (flow.Result, error) {
 		return eng.SyncBacklog(r.Context(), c.actor, c.requestID, req.Items)
@@ -204,6 +205,21 @@ func (s *server) board(w http.ResponseWriter, _ *http.Request) {
 	sort.Slice(b.Runs, func(i, j int) bool { return idLess(b.Runs[i].ID, b.Runs[j].ID) })
 	sort.Slice(b.Flags, func(i, j int) bool { return idLess(b.Flags[i].ID, b.Flags[j].ID) })
 	writeJSON(w, http.StatusOK, b)
+}
+
+func (s *server) history(w http.ResponseWriter, r *http.Request) {
+	var history *flow.SliceHistory
+	s.eng.View(func(st *flow.State) {
+		if run := st.Runs[r.PathValue("id")]; run != nil {
+			snapshot := run.History
+			history = &snapshot
+		}
+	})
+	if history == nil {
+		writeError(w, &flow.Error{Code: flow.CodeNotFound, Message: "unknown run " + strconv.Quote(r.PathValue("id"))})
+		return
+	}
+	writeJSON(w, http.StatusOK, history)
 }
 
 func (s *server) inbox(w http.ResponseWriter, r *http.Request) {
