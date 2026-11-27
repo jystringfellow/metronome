@@ -451,12 +451,12 @@ func pollWithoutWrites(t *testing.T, eng *flow.Engine, transport *countingTransp
 	return res
 }
 
-func assertStalledPRNote(t *testing.T, res github.PollResult, outcome string) {
+func assertReworkPRNote(t *testing.T, res github.PollResult, outcome string, status flow.SliceStatus) {
 	t.Helper()
 	if len(res.Notes) != 1 {
 		t.Fatalf("notes = %v, want one note", res.Notes)
 	}
-	for _, want := range []string{"I1.1", "acme/app#7", outcome, "a person must decide"} {
+	for _, want := range []string{"I1.1", "acme/app#7", outcome, string(status) + " for rework", "a person must decide"} {
 		if !strings.Contains(res.Notes[0], want) {
 			t.Errorf("note %q does not mention %q", res.Notes[0], want)
 		}
@@ -499,12 +499,12 @@ func TestAMergeOfAStalledSlicesPRIsReportedAndNotRecorded(t *testing.T) {
 	}
 	gh[key].State, gh[key].MergedBy = github.PRMerged, "pat"
 	res := pollWithoutWrites(t, eng, transport, poll)
-	assertStalledPRNote(t, res, "merged by pat")
+	assertReworkPRNote(t, res, "merged by pat", flow.SliceStalled)
 	if sl := slice(t, eng); sl.Status != flow.SliceStalled || sl.PR.HeadSHA != "aaa" || !sl.Rework {
 		t.Fatalf("slice after the merge = %+v", sl)
 	}
 	res = pollWithoutWrites(t, eng, transport, poll)
-	assertStalledPRNote(t, res, "merged by pat")
+	assertReworkPRNote(t, res, "merged by pat", flow.SliceStalled)
 }
 
 func TestACloseOfAStalledSlicesPRIsReported(t *testing.T) {
@@ -548,10 +548,80 @@ func TestACloseOfAStalledSlicesPRIsReported(t *testing.T) {
 	}
 	gh[key].State = github.PRClosed
 	res := pollWithoutWrites(t, eng, transport, poll)
-	assertStalledPRNote(t, res, "closed without merging")
+	assertReworkPRNote(t, res, "closed without merging", flow.SliceStalled)
 	if sl := slice(t, eng); sl.Status != flow.SliceStalled || sl.PR.HeadSHA != "aaa" {
 		t.Fatalf("slice after the close = %+v", sl)
 	}
 	res = pollWithoutWrites(t, eng, transport, poll)
-	assertStalledPRNote(t, res, "closed without merging")
+	assertReworkPRNote(t, res, "closed without merging", flow.SliceStalled)
+}
+
+func TestMergesAndClosesOfAQueuedRunningOrFlaggedSlicesPRAreReportedAndNotRecorded(t *testing.T) {
+	ctx := context.Background()
+	eng, err := flow.NewEngine(ctx, flow.DefaultConfig(), store.NewMemory(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	submittedSlice(t, eng)
+	snap := &github.Snapshot{
+		Repo: "acme/app", Number: 7, HeadSHA: "aaa", State: github.PROpen, HeadChecks: github.ChecksSuccess,
+		Reviews: []github.Review{{ID: "PRR_1", Author: "rev", State: github.ReviewChangesRequested, CommitSHA: "aaa", SubmittedAt: time.Now()}},
+	}
+	transport := &countingTransport{handlerTransport: handlerTransport{api.Handler(eng)}}
+	p := github.Poller{
+		Client: &api.Client{BaseURL: "http://metronome.test", Actor: "github", HTTP: &http.Client{Transport: transport}},
+		Source: fakeGitHub{"acme/app metronome/I1.1": snap},
+	}
+	poll := func() github.PollResult {
+		t.Helper()
+		res, err := p.Once(ctx)
+		if err != nil || len(res.Errors) > 0 {
+			t.Fatalf("poll: %v %v", err, res.Errors)
+		}
+		return res
+	}
+	assertSlice := func(status flow.SliceStatus) {
+		t.Helper()
+		if sl := slice(t, eng); sl.Status != status || !sl.Rework || sl.PR == nil || sl.PR.Number != 7 || sl.PR.HeadSHA != "aaa" {
+			t.Fatalf("slice = %+v, PR = %+v, want %s with the original PR", sl, sl.PR, status)
+		}
+	}
+	assertQuietPoll := func(status flow.SliceStatus) {
+		t.Helper()
+		if res := pollWithoutWrites(t, eng, transport, poll); len(res.Notes) != 0 {
+			t.Fatalf("notes for open %s PR = %v", status, res.Notes)
+		}
+		assertSlice(status)
+	}
+
+	poll()
+	assertSlice(flow.SliceQueued)
+	snap.HeadSHA = "bbb"
+	snap.Reviews = append(snap.Reviews, github.Review{ID: "PRR_2", Author: "rev", State: github.ReviewApproved, CommitSHA: "bbb", SubmittedAt: snap.Reviews[0].SubmittedAt.Add(time.Minute)})
+	assertQuietPoll(flow.SliceQueued)
+	snap.State, snap.MergedBy = github.PRMerged, "pat"
+	res := pollWithoutWrites(t, eng, transport, poll)
+	assertReworkPRNote(t, res, "merged by pat", flow.SliceQueued)
+	assertSlice(flow.SliceQueued)
+	if repeat := pollWithoutWrites(t, eng, transport, poll); !slices.Equal(repeat.Notes, res.Notes) {
+		t.Fatalf("repeat notes = %v, want %v", repeat.Notes, res.Notes)
+	}
+
+	snap.State, snap.MergedBy = github.PROpen, ""
+	r, err := eng.Claim(ctx, "laptop", "", "laptop", "")
+	must(t, r, err)
+	assertQuietPoll(flow.SliceRunning)
+	snap.State = github.PRClosed
+	res = pollWithoutWrites(t, eng, transport, poll)
+	assertReworkPRNote(t, res, "closed without merging", flow.SliceRunning)
+	assertSlice(flow.SliceRunning)
+
+	snap.State = github.PROpen
+	r, err = eng.FlagRun(ctx, "laptop", "", "R2", flow.AskAnswer, "CSV or JSON?", "")
+	must(t, r, err)
+	assertQuietPoll(flow.SliceFlagged)
+	snap.State = github.PRMerged
+	res = pollWithoutWrites(t, eng, transport, poll)
+	assertReworkPRNote(t, res, "who merged", flow.SliceFlagged)
+	assertSlice(flow.SliceFlagged)
 }

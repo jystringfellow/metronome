@@ -216,6 +216,21 @@ open.
 - This decision supersedes the Release slot requirement for tiers 0 and 1 in SPEC.md sections 2.5 and 4 until
   the maintainer updates the SPEC.
 
+## Decided (2026-11-27): merges and closes during rework
+
+- Decided by the maintainer on 2026-11-27: the poller follows queued, running and flagged slices with a recorded
+  PR, as it does stalled slices, only to report a merge or close. The note names the slice, the PR, what happened,
+  who merged if known, and that a person must decide. Nothing is recorded, and an open PR on such a slice
+  records nothing until the fixer resubmits. Merged slices and rework slices without a recorded PR are not
+  followed; tracking of submitted slices and slices waiting for review or merge is unchanged.
+
+## Agent decision (2026-11-27): reporting during rework
+
+- The note names the slice's status so a person can tell a running fixer from a waiting one. Stalled notes
+  keep their wording.
+- A parked slice is queued, so it is followed too if it has a PR, consistent with the maintainer's decision.
+- An open PR on these slices produces no note, as for stalled slices, to keep polls quiet while a fixer works.
+
 ## Designed, not built: open workstreams and shared work (2026-11-26)
 
 Recorded so the data model leaves room for it. Nothing here is in the proof of concept.
@@ -362,12 +377,11 @@ Choices made while building step 1 where SPEC.md was silent. Each is easy to cha
   its slices out of review. A draft PR never moves into review.
 - **Reported, not recorded:** a PR closed without merging, and a closed or merged PR on the branch that
   Metronome never recorded for the slice, such as one left from an earlier use of the branch name. The poller
-  also follows a stalled slice that has a recorded PR (waiting for rework after failed checks, a lost lease or a dropped rework
-  run), only to report: when that PR is merged or closed, the poll names the slice, the PR, what happened and who
+  also follows a slice being reworked (queued, running, flagged or stalled) that has a recorded PR, only to
+  report: when that PR is merged or closed, the poll names the slice, the PR, what happened and who
   merged if known, and says a person must decide, for example drop the item or reopen the work. The engine still
   refuses a merge during rework, so nothing is recorded. While the PR is open, new heads, checks and reviews wait
-  until the fixer resubmits. Queued, running and flagged slices are not followed, so a merge while they are
-  reworked is not reported yet.
+  until the fixer resubmits. (Updated 2026-11-27.)
 
 ## Verified on the development machine
 
@@ -393,8 +407,6 @@ Everything section 12 of SPEC.md marks Open or Unverified, plus:
 - 2026-11-27: terminal Ctrl-C signals the foreground process group, so the wrapped command may receive SIGINT
   twice (directly and forwarded). Whether to suppress forwarding when stdin is a terminal or use a separate
   process group is undecided.
-- 2026-11-27: whether the poller should also report merges and closes for queued, running and flagged slices
-  that have a PR; the merge-during-rework reporting decided on 2026-11-26 currently covers only stalled slices.
 - The repository for the proof-of-concept pilot, and the mapping from its approver's rules to tiers 0 to 3.
 - How the local service authenticates to the approver's results.
 - When a workstream's own backlog and its subscriptions compete for one free slot, which goes first.
