@@ -27,7 +27,7 @@ const defaultServer = "http://127.0.0.1:7340"
 const usage = `metronome: a flow record for AI delivery work
 
 Service:
-  serve [--addr 127.0.0.1:7340] [--db metronome.db] [--tick 30s]
+  serve [--addr 127.0.0.1:7340] [--db metronome.db] [--tick 30s]  also serves a read-only board page at /
 
 Looking:
   board [--json]                  limits, usage, items, slices, open runs and asks
@@ -42,7 +42,8 @@ Backlog and plan:
   plan drop ITEM
 
 Runners (the connector operations):
-  next --runner ID [--slice S]    claim the next slice (next_work)
+  next --runner ID [--slice S] [--json]  claim the next slice and print its brief (next_work)
+  run --runner ID [--slice S] [--every 5m] -- CMD [ARGS...]  claim, run CMD with its brief, renew, submit or drop
   report RUN [--note TEXT]        renew the lease (heartbeat)
   ask (--run R | --item I | --slice S) --type ASK --question TEXT [--owner WHO]
   submit RUN --branch BRANCH      the work will arrive on BRANCH
@@ -112,6 +113,10 @@ func RunWithDeps(ctx context.Context, args []string, out, errOut io.Writer, deps
 	a := &app{out: out, errOut: errOut, requestID: *requestID, prs: deps.GitHub,
 		client: &api.Client{BaseURL: *server, Actor: *actor, HTTP: deps.HTTP}}
 	if err := a.dispatch(ctx, rest[0], rest[1:]); err != nil {
+		var status exitStatus
+		if errors.As(err, &status) {
+			return int(status)
+		}
 		var ue usageError
 		if errors.As(err, &ue) {
 			fmt.Fprintf(errOut, "metronome %s: %s\n", rest[0], ue.msg)
@@ -152,6 +157,8 @@ func (a *app) dispatch(ctx context.Context, cmd string, args []string) error {
 		return a.plan(ctx, args)
 	case "next":
 		return a.next(ctx, args)
+	case "run":
+		return a.run(ctx, args)
 	case "report":
 		return a.report(ctx, args)
 	case "ask":
@@ -402,22 +409,113 @@ func (a *app) next(ctx context.Context, args []string) error {
 	fs := newFlags("next")
 	runner := fs.String("runner", "", "")
 	slice := fs.String("slice", "", "")
+	asJSON := fs.Bool("json", false, "")
 	if err := parse(fs, args, 0); err != nil {
 		return err
 	}
 	if *runner == "" {
 		return usagef("--runner ID is required")
 	}
-	var res flow.Result
-	if err := a.client.Post(ctx, "/v1/claims", a.requestID, api.ClaimRequest{RunnerID: *runner, SliceID: *slice}, &res); err != nil {
+	b, err := a.claim(ctx, *runner, *slice)
+	if err != nil {
 		return err
+	}
+	if *asJSON {
+		return writeJSON(a.out, b)
+	}
+	return b.writeText(a.out)
+}
+
+func (a *app) claim(ctx context.Context, runner, slice string) (brief, error) {
+	var res flow.Result
+	if err := a.client.Post(ctx, "/v1/claims", a.requestID, api.ClaimRequest{RunnerID: runner, SliceID: slice}, &res); err != nil {
+		return brief{}, err
 	}
 	c, ok := flow.ClaimFrom(res)
 	if !ok {
-		return fmt.Errorf("the claim returned no run")
+		return brief{}, fmt.Errorf("the claim returned no run")
 	}
-	fmt.Fprintf(a.out, "run %s claimed slice %s; lease until %s\n", c.RunID, c.SliceID, c.LeaseUntil.Local().Format(time.Kitchen))
-	return nil
+	b, err := a.readBrief(ctx, c)
+	if err != nil {
+		return brief{Claim: briefClaim{RunID: c.RunID, SliceID: c.SliceID, LeaseUntil: c.LeaseUntil.UTC()}}, fmt.Errorf("run %s claimed slice %s, but its brief could not be read: %w", c.RunID, c.SliceID, err)
+	}
+	return b, nil
+}
+
+type brief struct {
+	Claim briefClaim `json:"claim"`
+	Slice briefSlice `json:"slice"`
+	Item  briefItem  `json:"item"`
+}
+
+type briefClaim struct {
+	RunID      string    `json:"run_id"`
+	SliceID    string    `json:"slice_id"`
+	LeaseUntil time.Time `json:"lease_until"`
+}
+
+type briefSlice struct {
+	ID        string   `json:"id"`
+	Repo      string   `json:"repo"`
+	Title     string   `json:"title"`
+	Criteria  []string `json:"criteria"`
+	Approvers []string `json:"approvers"`
+}
+
+type briefItem struct {
+	ID     string `json:"id"`
+	Ref    string `json:"ref"`
+	Title  string `json:"title"`
+	Intent string `json:"intent"`
+}
+
+func (a *app) readBrief(ctx context.Context, c flow.Claim) (brief, error) {
+	var board api.Board
+	if err := a.client.Get(ctx, "/v1/board", &board); err != nil {
+		return brief{}, err
+	}
+	for _, sl := range board.Slices {
+		if sl.ID != c.SliceID {
+			continue
+		}
+		for _, it := range board.Items {
+			if it.ID == sl.ItemID {
+				return brief{
+					Claim: briefClaim{RunID: c.RunID, SliceID: c.SliceID, LeaseUntil: c.LeaseUntil.UTC()},
+					Slice: briefSlice{ID: sl.ID, Repo: sl.Repo, Title: sl.Title,
+						Criteria: append([]string{}, sl.Criteria...), Approvers: append([]string{}, sl.Approvers...)},
+					Item: briefItem{ID: it.ID, Ref: it.Ref, Title: it.Title, Intent: it.Intent},
+				}, nil
+			}
+		}
+		return brief{}, fmt.Errorf("item %s missing from board", sl.ItemID)
+	}
+	return brief{}, fmt.Errorf("slice %s missing from board", c.SliceID)
+}
+
+func (b brief) writeText(w io.Writer) error {
+	var text strings.Builder
+	fmt.Fprintf(&text, "run %s claimed slice %s; lease until %s\n", b.Claim.RunID, b.Claim.SliceID, b.Claim.LeaseUntil.Local().Format(time.Kitchen))
+	fmt.Fprintf(&text, "slice:     %s %s\nrepo:      %s\n", b.Slice.ID, b.Slice.Title, b.Slice.Repo)
+	fmt.Fprintf(&text, "item:      %s %s (%s)\n", b.Item.Ref, b.Item.Title, b.Item.ID)
+	intent := b.Item.Intent
+	if intent == "" {
+		intent = "none given"
+	}
+	fmt.Fprintf(&text, "intent:    %s\n", strings.ReplaceAll(intent, "\n", "\n           "))
+	if len(b.Slice.Criteria) == 0 {
+		fmt.Fprintln(&text, "criteria:  none given")
+	} else {
+		fmt.Fprintln(&text, "criteria:")
+		for _, criterion := range b.Slice.Criteria {
+			fmt.Fprintf(&text, "  - %s\n", strings.ReplaceAll(criterion, "\n", "\n    "))
+		}
+	}
+	if len(b.Slice.Approvers) > 0 {
+		fmt.Fprintf(&text, "approvers: %s\n", strings.Join(b.Slice.Approvers, ", "))
+	}
+	_, err := io.WriteString(w, text.String())
+	return err
 }
 
 func (a *app) report(ctx context.Context, args []string) error {

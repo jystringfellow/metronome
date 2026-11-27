@@ -81,6 +81,9 @@ type server struct {
 func Handler(eng *flow.Engine) http.Handler {
 	s := &server{eng: eng}
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /{$}", asset("index.html", "text/html; charset=utf-8"))
+	mux.HandleFunc("GET /board.js", asset("board.js", "text/javascript; charset=utf-8"))
+	mux.HandleFunc("GET /board.css", asset("board.css", "text/css; charset=utf-8"))
 	mux.HandleFunc("GET /v1/board", s.board)
 	mux.HandleFunc("GET /v1/inbox/{owner}", s.inbox)
 	mux.HandleFunc("GET /v1/events", s.events)

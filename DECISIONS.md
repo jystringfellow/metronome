@@ -3,6 +3,69 @@
 This file records what has been decided about Metronome, what the review of SPEC.md found, and what is still
 open.
 
+## Decided (2026-11-27): the board page
+
+- Maintainer's decision: on 2026-11-27 the maintainer asked for a way to watch work being picked up and
+  worked on. `metronome serve` now serves a read-only board page at `/`, the first version of the proposed
+  web view, brought forward ahead of the reviewer and intake adapters.
+- Agent's decisions:
+  - Read only `GET /v1/board` and `GET /v1/events`, because they already carry the required data. The first
+    load reads the whole event log in pages to find the latest 30; subsequent reads are incremental. Verify
+    the last event's ID and sequence before continuing, because a replaced database can otherwise leave a
+    stale event history even when an incremental query returns no events.
+  - Refresh every five seconds and pause when the tab is hidden, because leases and polling move on minute
+    scales and the service is local.
+  - Hide done and dropped items and merged slices, with counts, to match `metronome board`.
+  - Compute lease time left against the service's clock using the HTTP `Date` header, so skewed viewer
+    clocks do not mislead.
+  - Embed separate scripts and styles and use a strict Content-Security-Policy (`default-src 'none'`,
+    `form-action 'none'`) to let the browser enforce the read-only, self-contained view.
+  - Link PRs only for validated `OWNER/NAME` repositories and positive PR numbers, so other repository
+    identifiers remain plain text rather than misleading links.
+
+## Decided (2026-11-27): runner instructions
+
+- [docs/runners.md](docs/runners.md) is the guide for agents taking work from Metronome and people wiring
+  them up. Keep it in sync with the CLI.
+
+## Decided (2026-11-27): metronome run
+
+- `run --runner ID [--slice S] [--every D] -- CMD [ARGS...]` claims exactly as `next` does. The global request
+  ID applies only to the claim. If the brief cannot be read or the command cannot start, the wrapper drops the
+  run best effort. Metronome's own messages go to stderr; the command keeps stdin, stdout and stderr.
+- The command inherits its environment with these overrides (changes to this contract are additive only):
+  - `METRONOME_RUN_ID`: the claimed run ID.
+  - `METRONOME_SLICE_ID`: the claimed slice ID.
+  - `METRONOME_RUNNER`: the runner ID from `--runner`.
+  - `METRONOME_BRIEF`: absolute path to a file containing the same bytes as `next --json` for the claim.
+  - `METRONOME_BRANCH_FILE`: absolute path to an initially empty file for the command to write its branch name.
+  - `METRONOME_URL`: the service URL in effect.
+  - `METRONOME_ACTOR`: the actor in effect.
+  Both files live in a private temporary directory removed when `run` returns.
+- Renew every five minutes by default, leaving margin on the 15-minute lease. A conflict stops renewal without
+  killing the command; other renewal errors are reported and retried. Renewal stops before closing the run.
+- On command exit 0 with a branch, submit; otherwise drop, keeping the slice's slots. The branch is the file's
+  content with surrounding whitespace trimmed; missing, empty or multi-line content means no branch. If the run
+  is already closed, do not close it again. A conflict on closing is reported, including the intended branch
+  when submitting.
+- Forward SIGINT and SIGTERM to the command; cancellation of the caller forwards SIGTERM. Exit with the command's
+  code (128 plus the signal number if killed by a signal), except that failure to close the run other than a
+  conflict changes a successful command's exit code to 1. Invalid usage exits 2; claiming or starting the
+  command failing exits 1.
+
+## Decided (2026-11-27): the slice brief
+
+- `metronome next` prints the claim, slice and item. With `--json`, it prints one object with these sections:
+  `claim` (`run_id`, `slice_id`, `lease_until`), `slice` (`id`, `repo`, `title`, `criteria`, `approvers`),
+  and `item` (`id`, `ref`, `title`, `intent`). Every field is always present; empty criteria and approvers are
+  arrays, absent intent is an empty string, and the lease is an RFC 3339 timestamp in UTC. Changes to this
+  contract are additive only. `metronome run` will hand this same object to its command.
+- The CLI reads `GET /v1/board` after claiming. No new endpoint is needed because the slice and item brief
+  fields are fixed once written. If the read fails or the slice or item is missing, the CLI reports the run
+  and fails without printing a partial brief.
+- The brief is not the context bundle (`get_bundle`) in SPEC.md section 9, which stays as designed and is
+  still to be built.
+
 ## Decided (2026-11-26)
 
 - **Local first, hosted as the goal.** The local version proves the protocol with one person and one repository.
@@ -75,12 +138,12 @@ open.
 - **Failed check results for any other head are refused as stale** and change nothing.
 - Proposed by the agent and accepted by the maintainer on 2026-11-26.
 
-## Agent decision (2026-11-27): current-head checks
+## Decided (2026-11-27): current-head checks
 
 - **Green check results for any other head are also refused as stale.** A new head must be recorded with
   `pr-opened` before recording checks on it, including when checks are entered by hand. Why: a stale green
   result would move the recorded head back and let `ReadyForReview` trust an old commit.
-- Decided by the implementing agent on 2026-11-27, separate from the maintainer's 2026-11-26 decision.
+- Proposed by the implementing agent and accepted by the maintainer on 2026-11-27.
 
 ## Decided (2026-11-27): a head that moves after approval
 
@@ -142,10 +205,11 @@ Recorded so the data model leaves room for it. Nothing here is in the proof of c
   - Monitor checks, marking each hypothesis written at plan time proved or not from real numbers. A breach opens
     a triage item or uses the expedite slot.
   - Intake, where the same signals rank the backlog.
-- **A read-only web view served by the Metronome binary,** built on the same HTTP API and event feed: each
-  workstream's board with stage columns and WIP counts, each person's inbox, and an item page with its evidence
-  timeline. Writes such as approving or answering an ask stay in the CLI and MCP server at first. Built after
-  the GitHub poller, the reviewer adapter and an intake adapter, when there is a live loop to watch.
+- **A read-only web view served by the Metronome binary,** built on the same HTTP API and event feed: the
+  first version (one board, open runs, open asks and recent events) was built on 2026-11-27 at the maintainer's
+  request. Per-workstream boards with stage columns and WIP counts, each person's inbox, an item page with
+  its evidence timeline and panels for signal adapters stay proposed. Writes such as approving or answering
+  an ask stay in the CLI and MCP server.
 
 ## Decided from the SPEC review (2026-11-26), now in SPEC.md
 
@@ -271,6 +335,15 @@ Everything section 12 of SPEC.md marks Open or Unverified, plus:
 
 - 2026-11-27: what a withdrawal should do when a sibling PR of the item has already merged; today the item
   returns to executing and the merged PR stays merged.
+- 2026-11-27: the board page has no authentication, like the API it reads; keep it on the default loopback
+  address. How to protect the page and API when hosted with OIDC sign-in remains undecided.
+- 2026-11-27: whether to add a tail query to the events feed once logs grow, to avoid reading the whole log
+  on first load.
+- 2026-11-27: the runner brief does not include ask answers, rework status or the previous branch. How to
+  include this context in the handoff to a runner resuming a slice is undecided.
+- 2026-11-27: terminal Ctrl-C signals the foreground process group, so the wrapped command may receive SIGINT
+  twice (directly and forwarded). Whether to suppress forwarding when stdin is a terminal or use a separate
+  process group is undecided.
 - 2026-11-27: whether the poller should also report merges and closes for queued, running and flagged slices
   that have a PR; the merge-during-rework reporting decided on 2026-11-26 currently covers only stalled slices.
 - The repository for the proof-of-concept pilot, and the mapping from its approver's rules to tiers 0 to 3.
