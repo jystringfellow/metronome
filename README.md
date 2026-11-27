@@ -39,6 +39,18 @@ go build -o metronome ./cmd/metronome
 
 Run `metronome help` for every command.
 
+To wrap a coding agent and keep its lease alive until it finishes:
+
+```sh
+./metronome run --runner laptop -- sh -c 'claude -p "Do the work in $METRONOME_BRIEF" && git branch --show-current > "$METRONOME_BRANCH_FILE"'
+```
+
+The command receives the claim and service details in `METRONOME_*` environment variables (see
+[DECISIONS.md](DECISIONS.md)). The brief file contains the same JSON as `next --json`. By default the wrapper
+renews the lease every five minutes (`--every` overrides this), submits on success with a branch in
+`METRONOME_BRANCH_FILE`, and otherwise drops the run, keeping the slice's slots. A command that already closed
+its run is left alone. Metronome prints its own messages to stderr.
+
 ## Developing
 
 ```sh
