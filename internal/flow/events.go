@@ -33,6 +33,7 @@ const (
 	EvChecksCompleted    = "checks_completed"
 	EvPRReadyForReview   = "pr_ready_for_review"
 	EvPRApproved         = "pr_approved"
+	EvApprovalWithdrawn  = "approval_withdrawn"
 	EvPRChangesRequested = "pr_changes_requested"
 	EvItemAwaitsRelease  = "item_awaits_release"
 	EvReleaseSlotTaken   = "release_slot_taken"
@@ -140,6 +141,12 @@ type prApproved struct {
 type prChangesRequested struct {
 	SliceID string `json:"slice_id"`
 	By      string `json:"by"`
+}
+
+type approvalWithdrawn struct {
+	SliceID      string `json:"slice_id"`
+	WithdrawnSHA string `json:"withdrawn_sha"`
+	HeadSHA      string `json:"head_sha"`
 }
 
 func (s *State) Apply(e Event) error {
@@ -348,6 +355,26 @@ func (s *State) apply(e Event) error {
 		}
 		sl.Status, sl.PR.ApprovedSHA, sl.HoldsReview = SliceApproved, p.HeadSHA, p.KeepsReview
 		sl.Version++
+	case EvApprovalWithdrawn:
+		var p approvalWithdrawn
+		if err := json.Unmarshal(e.Data, &p); err != nil {
+			return err
+		}
+		sl := s.Slices[p.SliceID]
+		if sl == nil || sl.PR == nil {
+			return errUnknown("slice PR", p.SliceID)
+		}
+		sl.Status, sl.HoldsReview = SlicePROpen, true
+		sl.Version++
+		it := s.Items[sl.ItemID]
+		if it.Status == ItemReleasing || it.Status == ItemAwaitingRelease {
+			it.Status, it.HoldsRelease = ItemExecuting, false
+		}
+		for _, sib := range s.itemSlices(it.ID) {
+			if sib.Status == SliceApproved || sib.Status == SliceMerged {
+				sib.HoldsReview = false
+			}
+		}
 	case EvPRChangesRequested:
 		var p prChangesRequested
 		if err := json.Unmarshal(e.Data, &p); err != nil {
