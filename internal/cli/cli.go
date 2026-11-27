@@ -45,6 +45,8 @@ Backlog and plan:
                          skips items with "claimed_by" set
                          items may carry "slices" (as plan propose) and an optional "predicted_tier" (default 1); see docs/backlog.md
   intake --workstream NAME [--every D] -- CMD [ARGS...]  mirror Ready from a source command; see docs/intake.md
+  publish --workstream NAME --name PUBLISHER [--every D] [--batch N] -- CMD [ARGS...]
+                         mirror transitions to a publisher command; see docs/intake.md
   plan start [--workstream NAME] [ITEM]  pull the top ready item with capacity
                          an item with backlog slices is proposed and its owner asked to approve
   plan propose ITEM --slices FILE [--approver WHO]
@@ -64,8 +66,10 @@ People:
   release-done ITEM               finish the release of a tier 2 or 3 item
 
 GitHub:
-  github issues --repo OWNER/NAME [--label L] [--project OWNER/N [--rank-field Rank]] [--owner WHO]
+  github issues --repo OWNER/NAME [--label L] [--project OWNER/N [--rank-field Rank]] [--owner WHO] [--instance NAME]
                          print backlog JSON from open labelled issues, for intake; see docs/intake.md
+  github publish --project OWNER/N --instance NAME [--status-field Status] [--map TRANSITION=OPTION] [--assignee LOGIN]
+                         read transitions and update project Status, PR links and issue claims
   github poll [--every 1m]        record what GitHub shows for each submitted slice's branch, once or on a repeat
   github pr-opened --slice S --repo OWNER/NAME --number N --head SHA
   github checks --slice S --head SHA (--success | --failure)
@@ -87,12 +91,16 @@ type app struct {
 	requestID   string
 	prs         github.Source
 	issues      github.IssueSource
+	projects    github.ProjectBoard
+	stdin       io.Reader
 }
 
 type Deps struct {
-	HTTP   *http.Client
-	GitHub github.Source
-	Issues github.IssueSource
+	HTTP     *http.Client
+	GitHub   github.Source
+	Issues   github.IssueSource
+	Projects github.ProjectBoard
+	Stdin    io.Reader
 }
 
 func Run(ctx context.Context, args []string, out, errOut io.Writer) int {
@@ -113,6 +121,12 @@ func RunWithDeps(ctx context.Context, args []string, out, errOut io.Writer, deps
 	if deps.Issues == nil {
 		deps.Issues = github.GH{}
 	}
+	if deps.Projects == nil {
+		deps.Projects = github.GH{}
+	}
+	if deps.Stdin == nil {
+		deps.Stdin = os.Stdin
+	}
 	global := flag.NewFlagSet("metronome", flag.ContinueOnError)
 	global.SetOutput(errOut)
 	global.Usage = func() { fmt.Fprint(errOut, usage) }
@@ -127,7 +141,7 @@ func RunWithDeps(ctx context.Context, args []string, out, errOut io.Writer, deps
 		global.Usage()
 		return 2
 	}
-	a := &app{out: out, errOut: errOut, requestID: *requestID, prs: deps.GitHub, issues: deps.Issues,
+	a := &app{out: out, errOut: errOut, requestID: *requestID, prs: deps.GitHub, issues: deps.Issues, projects: deps.Projects, stdin: deps.Stdin,
 		client: &api.Client{BaseURL: *server, Actor: *actor, HTTP: deps.HTTP}}
 	if err := a.dispatch(ctx, rest[0], rest[1:]); err != nil {
 		var ue usageError
@@ -168,6 +182,8 @@ func (a *app) dispatch(ctx context.Context, cmd string, args []string) error {
 		return a.backlog(ctx, args)
 	case "intake":
 		return a.intake(ctx, args)
+	case "publish":
+		return a.publish(ctx, args)
 	case "workstream":
 		return a.workstream(ctx, args)
 	case "plan":
@@ -543,6 +559,9 @@ func (a *app) github(ctx context.Context, args []string) error {
 	}
 	if event == "issues" {
 		return a.githubIssues(ctx, args)
+	}
+	if event == "publish" {
+		return a.githubPublish(ctx, args)
 	}
 	fs := newFlags("github " + event)
 	var req api.GitHubRequest

@@ -9,7 +9,7 @@ Metronome is a design and an early proof of concept.
 - [SPEC.md](SPEC.md): the full design.
 - [DECISIONS.md](DECISIONS.md): what has been decided, what the design review found, and what is still open.
 - [docs/backlog.md](docs/backlog.md): the backlog JSON contract.
-- [docs/intake.md](docs/intake.md): writing a source command for scheduled intake.
+- [docs/intake.md](docs/intake.md): writing source commands for scheduled intake and publishing.
 
 ## What runs today
 
@@ -39,6 +39,19 @@ it never discards work in Plan or later.
 `metronome github issues` is a read-only intake source for open labelled GitHub issues. It uses `gh`,
 optionally ranks issues by a GitHub Project's numeric field, and supplies one pre-planned slice per issue.
 Plans still need their owner's approval. See [intake](docs/intake.md) for the mapping and flags.
+
+`metronome publish` mirrors workstream transitions back to a source command with a durable cursor.
+`metronome github publish` updates a GitHub Project Status without replacing a value changed by a person
+between runs, comments with PR links, marks claims and closes done issues. See the
+[publish contract](docs/intake.md#publishing-back-to-the-source).
+
+For one shared source, run the two commands (in separate terminals) with the same instance name:
+
+```sh
+metronome workstream create example
+metronome intake --workstream example --every 10m -- metronome github issues --repo acme/app --project acme/3 --instance laptop-a --owner pat
+metronome publish --workstream example --name board --every 1m -- metronome github publish --project acme/3 --instance laptop-a
+```
 
 ```sh
 go build -o metronome ./cmd/metronome

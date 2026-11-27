@@ -24,6 +24,27 @@ const issuesJSON = `[
 
 const projectJSON = `{"data":{"repositoryOwner":{"projectV2":{"field":{"__typename":"ProjectV2Field","dataType":"NUMBER"},"items":{"pageInfo":{"hasNextPage":false},"nodes":[{"content":{"__typename":"Issue","number":2,"repository":{"nameWithOwner":"acme/app"}},"fieldValueByName":{"__typename":"ProjectV2ItemFieldNumberValue","number":1}}]}}}}}`
 
+func TestGitHubIssuesIntakeSkipsForeignClaim(t *testing.T) {
+	e := newEnv(t)
+	gh := github.GH{Run: func(_ context.Context, args ...string) ([]byte, error) {
+		if len(args) != 3 || args[0] != "api" || args[1] != "--paginate" {
+			t.Fatal(args)
+		}
+		return []byte(`[{"number":7,"title":"Export","labels":[{"name":"metronome:claimed:laptop-b"}]}]`), nil
+	}}
+	var out, notes bytes.Buffer
+	args := []string{"github", "issues", "--repo", "acme/app", "--owner", "pat", "--instance", "laptop-a"}
+	if code := cli.RunWithDeps(t.Context(), args, &out, &notes, cli.Deps{Issues: gh}); code != 0 {
+		t.Fatal(code, notes.String())
+	}
+	if result := e.ok("pat", "intake", "--workstream", "default", "--", "echo", out.String()); !strings.Contains(result, "claimed by laptop-b") || len(e.board().Items) != 0 {
+		t.Fatal(result)
+	}
+	if code := cli.RunWithDeps(t.Context(), append(args, "--instance", "Bad"), &out, &notes, cli.Deps{Issues: gh}); code != 2 {
+		t.Fatal(code, notes.String())
+	}
+}
+
 func TestGitHubIssuesPrintsABacklogForIntake(t *testing.T) {
 	e := newEnv(t)
 	var calls [][]string

@@ -35,6 +35,14 @@ type IntakeRequest struct {
 	Items      *[]flow.BacklogItem `json:"items"`
 }
 
+type PublishBatch = flow.PublishBatch
+
+type PublisherAdvanceRequest struct {
+	After int64           `json:"after"`
+	Seq   int64           `json:"seq"`
+	State json.RawMessage `json:"state,omitempty"`
+}
+
 type PlanStartRequest struct {
 	Workstream string `json:"workstream"`
 	ItemID     string `json:"item_id"`
@@ -99,6 +107,26 @@ func Handler(eng *flow.Engine) http.Handler {
 	mux.HandleFunc("GET /v1/workstreams", func(w http.ResponseWriter, r *http.Request) {
 		eng.View(func(st *flow.State) { writeJSON(w, http.StatusOK, st.WorkstreamViews()) })
 	})
+	mux.HandleFunc("GET /v1/workstreams/{name}/publishers/{publisher}/batch", func(w http.ResponseWriter, r *http.Request) {
+		limit := 100
+		if value := r.URL.Query().Get("limit"); value != "" {
+			parsed, err := strconv.Atoi(value)
+			if err != nil {
+				writeError(w, &flow.Error{Code: flow.CodeInvalid, Message: "invalid batch limit"})
+				return
+			}
+			limit = max(1, min(1000, parsed))
+		}
+		batch, err := eng.PublisherBatch(r.PathValue("name"), r.PathValue("publisher"), limit)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, batch)
+	})
+	mux.HandleFunc("POST /v1/workstreams/{name}/publishers/{publisher}/advance", command(func(r *http.Request, c call, req PublisherAdvanceRequest) (flow.Result, error) {
+		return eng.AdvancePublisher(r.Context(), c.actor, r.PathValue("name"), r.PathValue("publisher"), req.After, req.Seq, req.State)
+	}))
 	mux.HandleFunc("POST /v1/workstreams", command(func(r *http.Request, c call, req WorkstreamCreateRequest) (flow.Result, error) {
 		return eng.CreateWorkstream(r.Context(), c.actor, c.requestID, req.Name, req.PartialLimits)
 	}))
