@@ -822,6 +822,7 @@ func TestClaimHistoryIsRebuiltFromTheEventLog(t *testing.T) {
 	if history := h.history(third.RunID); !reflect.DeepEqual(history, want) {
 		t.Fatalf("history = %+v, want %+v", history, want)
 	}
+	h.ok(h.eng.PROpened(ctx(), "github", "", third.SliceID, "acme/app", 7, "def456"))
 	h.ok(h.eng.ChecksCompleted(ctx(), "github", "", third.SliceID, "def456", true))
 	if history := h.history(third.RunID); !reflect.DeepEqual(history, want) {
 		t.Fatalf("history changed after PR update: %+v", history)
