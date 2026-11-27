@@ -233,7 +233,7 @@ func TestAHeadPushedAwayAndBackInReviewCanStillBeApproved(t *testing.T) {
 	}
 }
 
-func TestAMergeBeforeApprovalLeavesTheSliceAsItWas(t *testing.T) {
+func TestAMergeBeforeApprovalIsRecordedAsApprovedByTheMerger(t *testing.T) {
 	eng, err := flow.NewEngine(context.Background(), flow.DefaultConfig(), store.NewMemory(), nil)
 	if err != nil {
 		t.Fatal(err)
@@ -248,15 +248,16 @@ func TestAMergeBeforeApprovalLeavesTheSliceAsItWas(t *testing.T) {
 	if _, err := p.Once(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	gh[key].State = github.PRMerged
+	gh[key].State, gh[key].MergedBy = github.PRMerged, "pat"
 	res, err := p.Once(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sl := slice(t, eng); sl.Status != flow.SlicePROpen {
-		t.Fatalf("a merge before approval changed the slice: %+v", sl)
+	sl := slice(t, eng)
+	if sl.Status != flow.SliceMerged || sl.PR.ApprovedSHA != "aaa" || sl.HoldsExecute || sl.HoldsReview {
+		t.Fatalf("after a merge before approval: %+v (notes %v)", sl, res.Notes)
 	}
-	if len(res.Notes) == 0 || !strings.Contains(res.Notes[0], "merged while pr_open") {
-		t.Fatalf("notes = %v", res.Notes)
+	if len(res.Recorded) != 1 || res.Recorded[0].String() != "I1.1 merged by pat, who approves it" {
+		t.Fatalf("recorded = %v", res.Recorded)
 	}
 }

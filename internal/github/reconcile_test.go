@@ -45,7 +45,15 @@ func events(actions []Action) []string {
 
 func TestReconcile(t *testing.T) {
 	merged := open("aaa", ChecksSuccess)
-	merged.State = PRMerged
+	merged.State, merged.MergedBy = PRMerged, "pat"
+	mergedNewHead := open("bbb", ChecksSuccess)
+	mergedNewHead.State, mergedNewHead.MergedBy = PRMerged, "pat"
+	mergedByNobody := open("aaa", ChecksSuccess)
+	mergedByNobody.State = PRMerged
+	prOpen := inReview("aaa")
+	prOpen.Status = flow.SlicePROpen
+	reworking := inReview("aaa")
+	reworking.Status = flow.SliceQueued
 	closed := open("aaa", ChecksSuccess)
 	closed.State = PRClosed
 	draft := open("aaa", ChecksSuccess)
@@ -81,7 +89,11 @@ func TestReconcile(t *testing.T) {
 		{"an approval waits for green checks on a new head", inReview("aaa"), open("bbb", ChecksPending, review("r1", "rev", ReviewApproved, "bbb", 1)), []string{"pr-opened"}, "not green"},
 		{"a replacement PR on the same head is recorded", inReview("aaa"), &Snapshot{Repo: "acme/app", Number: 9, HeadSHA: "aaa", State: PROpen, HeadChecks: ChecksSuccess}, []string{"pr-opened", "checks"}, ""},
 		{"a merge after approval records the merge", approvedSlice, merged, []string{"merged"}, ""},
-		{"a merge before approval is reported, not recorded", inReview("aaa"), merged, nil, "merged while in_review"},
+		{"a merge in review is recorded and approves the slice", inReview("aaa"), merged, []string{"merged"}, ""},
+		{"a merge before review is recorded and approves the slice", prOpen, merged, []string{"merged"}, ""},
+		{"a merge of a head Metronome has not seen records the head first", inReview("aaa"), mergedNewHead, []string{"pr-opened", "merged"}, ""},
+		{"a merge with no merger is reported, not recorded", inReview("aaa"), mergedByNobody, nil, "who merged"},
+		{"a merge while the slice is reworked is reported, not recorded", reworking, merged, nil, "merged while queued"},
 		{"an old merged PR on a reused branch is ignored", submitted(), merged, nil, "never recorded"},
 		{"a PR closed without merging records nothing", inReview("aaa"), closed, nil, "closed without merging"},
 		{"a head that moves after approval is reported, not recorded", approvedSlice, open("bbb", ChecksSuccess), nil, "after approval"},
@@ -108,6 +120,15 @@ func TestAnyReviewerCountsWhenTheSliceNamesNoApprovers(t *testing.T) {
 	}
 	if actions[0].Request.By != "anyone" {
 		t.Fatalf("approved by %q", actions[0].Request.By)
+	}
+}
+
+func TestAMergeBeforeApprovalNamesTheMerger(t *testing.T) {
+	snap := open("aaa", ChecksSuccess)
+	snap.State, snap.MergedBy = PRMerged, "pat"
+	actions, _ := Reconcile(inReview("aaa"), snap)
+	if len(actions) != 1 || actions[0].Request.By != "pat" {
+		t.Fatalf("actions = %+v, want one merge by pat", actions)
 	}
 }
 

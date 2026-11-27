@@ -384,22 +384,7 @@ func (e *Engine) PRApproved(ctx context.Context, actor, requestID, sliceID, head
 		if headSHA != sl.PR.HeadSHA {
 			return fail(CodeConflict, "approval is for %s but the PR head is %s", headSHA, sl.PR.HeadSHA)
 		}
-		allApproved := true
-		for _, sib := range d.s.itemSlices(sl.ItemID) {
-			if sib.ID != sl.ID && sib.Status != SliceApproved && sib.Status != SliceMerged {
-				allApproved = false
-			}
-		}
-		switch {
-		case !allApproved:
-			d.emit(EvPRApproved, prApproved{SliceID: sl.ID, HeadSHA: headSHA, By: by})
-		case d.s.Usage().Release < d.cfg.Limits.Release:
-			d.emit(EvPRApproved, prApproved{SliceID: sl.ID, HeadSHA: headSHA, By: by, KeepsReview: true})
-			d.emit(EvReleaseSlotTaken, itemRef{ItemID: sl.ItemID})
-		default:
-			d.emit(EvPRApproved, prApproved{SliceID: sl.ID, HeadSHA: headSHA, By: by, KeepsReview: true})
-			d.emit(EvItemAwaitsRelease, itemRef{ItemID: sl.ItemID})
-		}
+		d.approve(sl, headSHA, by)
 		return nil
 	})
 }
@@ -418,14 +403,26 @@ func (e *Engine) PRChangesRequested(ctx context.Context, actor, requestID, slice
 	})
 }
 
-func (e *Engine) PRMerged(ctx context.Context, actor, requestID, sliceID string) (Result, error) {
+func (e *Engine) PRMerged(ctx context.Context, actor, requestID, sliceID, by string) (Result, error) {
 	return e.execute(ctx, actor, requestID, func(d *decider) error {
 		sl, err := d.sliceWithPR(sliceID)
 		if err != nil {
 			return err
 		}
-		if sl.Status == SliceMerged {
+		switch sl.Status {
+		case SliceMerged:
 			return nil
+		case SliceApproved:
+		case SlicePROpen, SliceInReview:
+			if by == "" {
+				return fail(CodeInvalid, "slice %s merged before approval; the merge needs the user who merged, who approves it", sl.ID)
+			}
+			if sl.Status == SlicePROpen {
+				d.emit(EvPRReadyForReview, sliceRef{SliceID: sl.ID})
+			}
+			d.approve(sl, sl.PR.HeadSHA, by)
+		default:
+			return fail(CodeConflict, "slice %s is %s; a merge is recorded from pr_open, in_review or approved", sl.ID, sl.Status)
 		}
 		d.emit(EvPRMerged, sliceRef{SliceID: sl.ID})
 		return nil
@@ -464,6 +461,25 @@ func (e *Engine) ReleaseDone(ctx context.Context, actor, requestID, itemID strin
 		}
 		return nil
 	})
+}
+
+func (d *decider) approve(sl *Slice, headSHA, by string) {
+	allApproved := true
+	for _, sib := range d.s.itemSlices(sl.ItemID) {
+		if sib.ID != sl.ID && sib.Status != SliceApproved && sib.Status != SliceMerged {
+			allApproved = false
+		}
+	}
+	switch {
+	case !allApproved:
+		d.emit(EvPRApproved, prApproved{SliceID: sl.ID, HeadSHA: headSHA, By: by})
+	case d.s.Usage().Release < d.cfg.Limits.Release:
+		d.emit(EvPRApproved, prApproved{SliceID: sl.ID, HeadSHA: headSHA, By: by, KeepsReview: true})
+		d.emit(EvReleaseSlotTaken, itemRef{ItemID: sl.ItemID})
+	default:
+		d.emit(EvPRApproved, prApproved{SliceID: sl.ID, HeadSHA: headSHA, By: by, KeepsReview: true})
+		d.emit(EvItemAwaitsRelease, itemRef{ItemID: sl.ItemID})
+	}
 }
 
 func (d *decider) tick() {
