@@ -67,10 +67,23 @@ open.
   content with surrounding whitespace trimmed; missing, empty or multi-line content means no branch. If the run
   is already closed, do not close it again. A conflict on closing is reported, including the intended branch
   when submitting.
-- Forward SIGINT and SIGTERM to the command; cancellation of the caller forwards SIGTERM. Exit with the command's
+- Always forward SIGTERM to the command and forward SIGINT only when stdin is not a terminal; cancellation
+  of the caller forwards SIGTERM. Exit with the command's
   code (128 plus the signal number if killed by a signal), except that failure to close the run other than a
   conflict changes a successful command's exit code to 1. Invalid usage exits 2; claiming or starting the
   command failing exits 1.
+
+## Decided (2026-11-27): each interrupt reaches the command once
+
+- Decided by the maintainer: keep the command and its own subprocesses in the wrapper's process group, so
+  terminal Ctrl-C reaches the whole tree once. Do not create process groups, change the terminal's foreground
+  process group or use raw system calls. The separate-process-group approach was tried and rejected as too
+  complex and untested on macOS.
+- Suppress SIGINT forwarding when stdin is a terminal, as checked by the existing `go-isatty` dependency
+  (`/dev/null` is not a terminal). Keep catching SIGINT so the wrapper can close the run when the command
+  exits. Always forward SIGTERM, and forward SIGINT when stdin is not a terminal.
+- Limitation: with a terminal on stdin, SIGINT sent only to the wrapper's PID (for example `kill -INT`) is
+  not forwarded. Process managers and automation send SIGTERM, which is forwarded.
 
 ## Decided (2026-11-27): the slice brief
 
@@ -390,9 +403,6 @@ Everything section 12 of SPEC.md marks Open or Unverified, plus:
   on first load.
 - 2026-11-27: whether to list item-level asks and timed-out asks in the runner brief.
 - 2026-11-27: whether to record the head SHA a change request reviewed; this needs a new event payload field.
-- 2026-11-27: terminal Ctrl-C signals the foreground process group, so the wrapped command may receive SIGINT
-  twice (directly and forwarded). Whether to suppress forwarding when stdin is a terminal or use a separate
-  process group is undecided.
 - 2026-11-27: whether the poller should also report merges and closes for queued, running and flagged slices
   that have a PR; the merge-during-rework reporting decided on 2026-11-26 currently covers only stalled slices.
 - The repository for the proof-of-concept pilot, and the mapping from its approver's rules to tiers 0 to 3.

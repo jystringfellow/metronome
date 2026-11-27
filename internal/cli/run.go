@@ -98,6 +98,7 @@ func (a *app) runClaim(ctx context.Context, b brief, runner string, every time.D
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(signals)
+	terminal := a.terminal()
 	if err := cmd.Start(); err != nil {
 		return err
 	}
@@ -105,7 +106,7 @@ func (a *app) runClaim(ctx context.Context, b brief, runner string, every time.D
 	renewCtx, stopRenewing := context.WithCancel(context.WithoutCancel(ctx))
 	renewed := make(chan bool, 1)
 	go func() { renewed <- a.renew(renewCtx, runID, every) }()
-	code := a.waitCommand(ctx, cmd, signals)
+	code := a.waitCommand(ctx, cmd, signals, terminal)
 	stopRenewing()
 	closed := <-renewed
 	if !closed {
@@ -144,14 +145,20 @@ func guardedOutput(mu *sync.Mutex, out io.Writer) io.Writer {
 	return &lockedOutput{mu: mu, w: out}
 }
 
-func (a *app) waitCommand(ctx context.Context, cmd *exec.Cmd, signals <-chan os.Signal) int {
+func forwards(sig os.Signal, terminal bool) bool {
+	return sig != os.Interrupt || !terminal
+}
+
+func (a *app) waitCommand(ctx context.Context, cmd *exec.Cmd, signals <-chan os.Signal, terminal bool) int {
 	waited := make(chan error, 1)
 	go func() { waited <- cmd.Wait() }()
 	cancelled := ctx.Done()
 	for {
 		select {
 		case sig := <-signals:
-			_ = cmd.Process.Signal(sig)
+			if forwards(sig, terminal) {
+				_ = cmd.Process.Signal(sig)
+			}
 		case <-cancelled:
 			_ = cmd.Process.Signal(syscall.SIGTERM)
 			cancelled = nil
