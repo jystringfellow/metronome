@@ -60,7 +60,7 @@ GitHub:
   github ready-for-review --slice S
   github approved --slice S --head SHA --by WHO
   github changes-requested --slice S --by WHO
-  github merged --slice S
+  github merged --slice S [--by WHO]   WHO merged it; before an approval, WHO approves it
 
 Maintenance:
   tick                            expire leases and asks now
