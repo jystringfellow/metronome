@@ -40,6 +40,11 @@ go build -o metronome ./cmd/metronome
 
 Run `metronome help` for every command.
 
+While `serve` runs, open <http://127.0.0.1:7340/> for a read-only board showing limits, items, slices, open
+runs with lease time left, open asks and the latest events. It refreshes every few seconds from the same JSON
+API, ships inside the binary and changes nothing. The page and API are unauthenticated; keep the service on
+loopback.
+
 To wrap a coding agent and keep its lease alive until it finishes:
 
 ```sh
