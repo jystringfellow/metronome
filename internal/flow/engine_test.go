@@ -70,7 +70,7 @@ func (h *harness) backlog(n int) {
 	for i := 1; i <= n; i++ {
 		items = append(items, flow.BacklogItem{Ref: fmt.Sprintf("ACME-%d", i), Title: fmt.Sprintf("item %d", i), Owner: "pat", PredictedTier: 2})
 	}
-	h.ok(h.eng.SyncBacklog(ctx(), "test", "", items))
+	h.ok(h.eng.SyncBacklog(ctx(), "test", "", "", items))
 }
 
 func (h *harness) approvedItem(itemID string, slices int) {
@@ -85,7 +85,7 @@ func (h *harness) approvedItemAt(itemID string, slices, tier int) {
 
 func (h *harness) approveItem(itemID string, slices int, tier *int) {
 	h.t.Helper()
-	h.ok(h.eng.StartPlan(ctx(), "test", "", itemID))
+	h.ok(h.eng.StartPlan(ctx(), "test", "", "", itemID))
 	var specs []flow.SliceSpec
 	for i := 1; i <= slices; i++ {
 		specs = append(specs, flow.SliceSpec{Title: fmt.Sprintf("slice %d", i), Repo: "acme/app", Approvers: []string{"rev"}})
@@ -96,7 +96,7 @@ func (h *harness) approveItem(itemID string, slices int, tier *int) {
 
 func (h *harness) claim(runner string) flow.Claim {
 	h.t.Helper()
-	r := h.ok(h.eng.Claim(ctx(), runner, "", runner, ""))
+	r := h.ok(h.eng.Claim(ctx(), runner, "", runner, "", ""))
 	c, ok := flow.ClaimFrom(r)
 	if !ok {
 		h.t.Fatal("claim produced no slice_claimed event")
@@ -165,7 +165,7 @@ func TestBacklogRefillsToTheReadyLimitOnlyBelowTheThreshold(t *testing.T) {
 		t.Fatalf("ready = %d, want 10", got)
 	}
 	for _, id := range []string{"I1", "I2", "I3"} {
-		h.ok(h.eng.StartPlan(ctx(), "test", "", id))
+		h.ok(h.eng.StartPlan(ctx(), "test", "", "", id))
 	}
 	h.backlog(14)
 	if got := h.usage().Ready; got != 7 {
@@ -185,9 +185,9 @@ func TestPlanLimitAndApprovalFlag(t *testing.T) {
 	h := newHarness(t, nil)
 	h.backlog(5)
 	for i := 0; i < 3; i++ {
-		h.ok(h.eng.StartPlan(ctx(), "test", "", ""))
+		h.ok(h.eng.StartPlan(ctx(), "test", "", "", ""))
 	}
-	_, err := h.eng.StartPlan(ctx(), "test", "", "")
+	_, err := h.eng.StartPlan(ctx(), "test", "", "", "")
 	wantCode(t, err, flow.CodeNoCapacity)
 
 	h.ok(h.eng.ProposePlan(ctx(), "agent", "", "I1", []flow.SliceSpec{{Title: "a", Repo: "acme/app"}}, "lead"))
@@ -208,7 +208,7 @@ func TestPlanLimitAndApprovalFlag(t *testing.T) {
 	if len(inbox) != 0 {
 		t.Fatalf("approval left %d open asks", len(inbox))
 	}
-	h.ok(h.eng.StartPlan(ctx(), "test", "", ""))
+	h.ok(h.eng.StartPlan(ctx(), "test", "", "", ""))
 }
 
 func TestClaimReservesReviewSoReviewBoundsTheWholePipeline(t *testing.T) {
@@ -217,14 +217,14 @@ func TestClaimReservesReviewSoReviewBoundsTheWholePipeline(t *testing.T) {
 	h.approvedItem("I1", 3)
 	a := h.claim("r1")
 	h.claim("r2")
-	_, err := h.eng.Claim(ctx(), "r3", "", "r3", "")
+	_, err := h.eng.Claim(ctx(), "r3", "", "r3", "", "")
 	wantCode(t, err, flow.CodeNoCapacity)
 
 	h.toReview(a.SliceID)
 	if u := h.usage(); u.Execute != 1 || u.Review != 2 {
 		t.Fatalf("usage after one PR into review = %+v, want execute 1 review 2", u)
 	}
-	_, err = h.eng.Claim(ctx(), "r3", "", "r3", "")
+	_, err = h.eng.Claim(ctx(), "r3", "", "r3", "", "")
 	wantCode(t, err, flow.CodeNoCapacity)
 }
 
@@ -235,7 +235,7 @@ func TestExecuteLimitBindsWhenReviewHasRoom(t *testing.T) {
 	for i := 1; i <= 5; i++ {
 		h.claim(fmt.Sprintf("r%d", i))
 	}
-	_, err := h.eng.Claim(ctx(), "r6", "", "r6", "")
+	_, err := h.eng.Claim(ctx(), "r6", "", "r6", "", "")
 	wantCode(t, err, flow.CodeNoCapacity)
 }
 
@@ -324,9 +324,9 @@ func TestUnansweredRunnerAskParksTheSlice(t *testing.T) {
 func TestUnansweredPlanQuestionParksTheItemButApprovalAsksWait(t *testing.T) {
 	h := newHarness(t, nil)
 	h.backlog(2)
-	h.ok(h.eng.StartPlan(ctx(), "test", "", "I1"))
+	h.ok(h.eng.StartPlan(ctx(), "test", "", "", "I1"))
 	h.ok(h.eng.RaiseFlag(ctx(), "agent", "", flow.Subject{Kind: flow.SubjectItem, ID: "I1"}, flow.AskAnswer, "Which tenant?", ""))
-	h.ok(h.eng.StartPlan(ctx(), "test", "", "I2"))
+	h.ok(h.eng.StartPlan(ctx(), "test", "", "", "I2"))
 	h.ok(h.eng.ProposePlan(ctx(), "agent", "", "I2", []flow.SliceSpec{{Title: "a", Repo: "acme/app"}}, ""))
 
 	h.clock.advance(h.cfg.AskTimeout)
@@ -403,7 +403,7 @@ func TestAReworkClaimAfterRedChecksInReviewNeedsAnExecuteSlot(t *testing.T) {
 	h.toReview(c.SliceID)
 	h.claim("cloud")
 	h.ok(h.eng.ChecksCompleted(ctx(), "github", "", c.SliceID, "sha-"+c.SliceID, false))
-	_, err := h.eng.Claim(ctx(), "laptop", "", "laptop", c.SliceID)
+	_, err := h.eng.Claim(ctx(), "laptop", "", "laptop", "", c.SliceID)
 	wantCode(t, err, flow.CodeNoCapacity)
 	if sl := h.slice(c.SliceID); sl.Status != flow.SliceStalled || sl.HoldsExecute || !sl.HoldsReview {
 		t.Fatalf("slice after refused claim = %+v", sl)
@@ -479,7 +479,7 @@ func TestHumanRejectionReturnsToExecuteKeepingTheReviewReservation(t *testing.T)
 	if sl.Status != flow.SliceQueued || !sl.Rework || sl.HoldsExecute || !sl.HoldsReview {
 		t.Fatalf("rejected slice = %+v", sl)
 	}
-	r := h.ok(h.eng.Claim(ctx(), "cloud", "", "cloud", ""))
+	r := h.ok(h.eng.Claim(ctx(), "cloud", "", "cloud", "", ""))
 	if len(r.Events) == 0 {
 		t.Fatal("rework claim emitted nothing")
 	}
@@ -725,7 +725,7 @@ func TestAWithdrawalRestoresReviewEvenOverTheLimit(t *testing.T) {
 	if !h.slice(first).HoldsReview {
 		t.Fatal("withdrawn slice must hold Review even over the limit")
 	}
-	_, err := h.eng.Claim(ctx(), "r4", "", "r4", "")
+	_, err := h.eng.Claim(ctx(), "r4", "", "r4", "", "")
 	wantCode(t, err, flow.CodeNoCapacity)
 	h.reapprove(first, "bbb")
 	h.wantSlots(2, 0)
@@ -768,8 +768,8 @@ func TestRepeatedRequestIDIsIdempotent(t *testing.T) {
 	h := newHarness(t, nil)
 	h.backlog(1)
 	h.approvedItem("I1", 2)
-	r1 := h.ok(h.eng.Claim(ctx(), "laptop", "req-1", "laptop", ""))
-	r2 := h.ok(h.eng.Claim(ctx(), "laptop", "req-1", "laptop", ""))
+	r1 := h.ok(h.eng.Claim(ctx(), "laptop", "req-1", "laptop", "", ""))
+	r2 := h.ok(h.eng.Claim(ctx(), "laptop", "req-1", "laptop", "", ""))
 	c1, _ := flow.ClaimFrom(r1)
 	c2, ok := flow.ClaimFrom(r2)
 	if !r2.Duplicate || !ok || c1 != c2 {
@@ -985,7 +985,7 @@ func TestLowTierNonFinalMergeFreesReview(t *testing.T) {
 					}
 				}
 				h.wantSlots(1, 0)
-				_, err := h.eng.Claim(ctx(), "runner", "", "probe", "I2.1")
+				_, err := h.eng.Claim(ctx(), "runner", "", "probe", "", "I2.1")
 				wantCode(t, err, flow.CodeNoCapacity)
 				h.ok(h.eng.PRMerged(ctx(), "github", "", second, "rev"))
 				for _, replay := range []bool{false, true} {
@@ -1000,7 +1000,7 @@ func TestLowTierNonFinalMergeFreesReview(t *testing.T) {
 					}
 					h.wantSlots(0, 0)
 				}
-				h.ok(h.eng.Claim(ctx(), "runner", "", "probe", "I2.1"))
+				h.ok(h.eng.Claim(ctx(), "runner", "", "probe", "", "I2.1"))
 				h.ok(h.eng.PRMerged(ctx(), "github", "", first, "rev"))
 				h.wantDone("I1")
 				h.wantSlots(1, 0)

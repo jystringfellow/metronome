@@ -16,20 +16,23 @@ const (
 )
 
 type Board struct {
-	Limits flow.Limits  `json:"limits"`
-	Usage  flow.Usage   `json:"usage"`
-	Items  []flow.Item  `json:"items"`
-	Slices []flow.Slice `json:"slices"`
-	Runs   []flow.Run   `json:"runs"`
-	Flags  []flow.Flag  `json:"flags"`
+	Workstreams []flow.WorkstreamView `json:"workstreams"`
+	Limits      flow.Limits           `json:"limits"`
+	Usage       flow.Usage            `json:"usage"`
+	Items       []flow.Item           `json:"items"`
+	Slices      []flow.Slice          `json:"slices"`
+	Runs        []flow.Run            `json:"runs"`
+	Flags       []flow.Flag           `json:"flags"`
 }
 
 type BacklogRequest struct {
-	Items []flow.BacklogItem `json:"items"`
+	Workstream string             `json:"workstream"`
+	Items      []flow.BacklogItem `json:"items"`
 }
 
 type PlanStartRequest struct {
-	ItemID string `json:"item_id"`
+	Workstream string `json:"workstream"`
+	ItemID     string `json:"item_id"`
 }
 
 type ProposeRequest struct {
@@ -53,8 +56,14 @@ type AnswerRequest struct {
 }
 
 type ClaimRequest struct {
-	RunnerID string `json:"runner_id"`
-	SliceID  string `json:"slice_id"`
+	Workstream string `json:"workstream"`
+	RunnerID   string `json:"runner_id"`
+	SliceID    string `json:"slice_id"`
+}
+
+type WorkstreamCreateRequest struct {
+	Name string `json:"name"`
+	flow.PartialLimits
 }
 
 type ReportRequest struct {
@@ -82,14 +91,23 @@ func Handler(eng *flow.Engine) http.Handler {
 	s := &server{eng: eng}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/board", s.board)
+	mux.HandleFunc("GET /v1/workstreams", func(w http.ResponseWriter, r *http.Request) {
+		eng.View(func(st *flow.State) { writeJSON(w, http.StatusOK, st.WorkstreamViews()) })
+	})
+	mux.HandleFunc("POST /v1/workstreams", command(func(r *http.Request, c call, req WorkstreamCreateRequest) (flow.Result, error) {
+		return eng.CreateWorkstream(r.Context(), c.actor, c.requestID, req.Name, req.PartialLimits)
+	}))
+	mux.HandleFunc("POST /v1/workstreams/{name}/limits", command(func(r *http.Request, c call, req flow.PartialLimits) (flow.Result, error) {
+		return eng.SetWorkstreamLimits(r.Context(), c.actor, c.requestID, r.PathValue("name"), req)
+	}))
 	mux.HandleFunc("GET /v1/inbox/{owner}", s.inbox)
 	mux.HandleFunc("GET /v1/events", s.events)
 	mux.HandleFunc("POST /v1/tick", s.tick)
 	mux.HandleFunc("POST /v1/backlog/sync", command(func(r *http.Request, c call, req BacklogRequest) (flow.Result, error) {
-		return eng.SyncBacklog(r.Context(), c.actor, c.requestID, req.Items)
+		return eng.SyncBacklog(r.Context(), c.actor, c.requestID, req.Workstream, req.Items)
 	}))
 	mux.HandleFunc("POST /v1/plan/start", command(func(r *http.Request, c call, req PlanStartRequest) (flow.Result, error) {
-		return eng.StartPlan(r.Context(), c.actor, c.requestID, req.ItemID)
+		return eng.StartPlan(r.Context(), c.actor, c.requestID, req.Workstream, req.ItemID)
 	}))
 	mux.HandleFunc("POST /v1/items/{id}/plan/propose", command(func(r *http.Request, c call, req ProposeRequest) (flow.Result, error) {
 		return eng.ProposePlan(r.Context(), c.actor, c.requestID, r.PathValue("id"), req.Slices, req.Approver)
@@ -110,7 +128,7 @@ func Handler(eng *flow.Engine) http.Handler {
 		return eng.ResolveFlag(r.Context(), c.actor, c.requestID, r.PathValue("id"), req.Answer)
 	}))
 	mux.HandleFunc("POST /v1/claims", command(func(r *http.Request, c call, req ClaimRequest) (flow.Result, error) {
-		return eng.Claim(r.Context(), c.actor, c.requestID, req.RunnerID, req.SliceID)
+		return eng.Claim(r.Context(), c.actor, c.requestID, req.RunnerID, req.Workstream, req.SliceID)
 	}))
 	mux.HandleFunc("POST /v1/runs/{id}/heartbeat", command(func(r *http.Request, c call, req ReportRequest) (flow.Result, error) {
 		return eng.Heartbeat(r.Context(), c.actor, c.requestID, r.PathValue("id"), req.Note)
@@ -175,27 +193,59 @@ func command[T any](fn func(r *http.Request, c call, req T) (flow.Result, error)
 	}
 }
 
-func (s *server) board(w http.ResponseWriter, _ *http.Request) {
+func (s *server) board(w http.ResponseWriter, r *http.Request) {
+	ws := r.URL.Query().Get("workstream")
+	found := false
 	b := Board{Limits: s.eng.Config().Limits, Items: []flow.Item{}, Slices: []flow.Slice{}, Runs: []flow.Run{}, Flags: []flow.Flag{}}
 	s.eng.View(func(st *flow.State) {
+		if ws != "" && st.Workstreams[ws] == nil {
+			return
+		}
+		found = true
+		for _, view := range st.WorkstreamViews() {
+			if ws == "" || view.Name == ws {
+				b.Workstreams = append(b.Workstreams, view)
+			}
+		}
 		b.Usage = st.Usage()
 		for _, it := range st.Items {
+			if ws != "" && it.Workstream != ws {
+				continue
+			}
 			b.Items = append(b.Items, *it)
 		}
 		for _, sl := range st.Slices {
+			if ws != "" && sl.Workstream != ws {
+				continue
+			}
 			b.Slices = append(b.Slices, *sl)
 		}
 		for _, r := range st.Runs {
+			if ws != "" && st.Slices[r.SliceID].Workstream != ws {
+				continue
+			}
 			if !r.Closed {
 				b.Runs = append(b.Runs, *r)
 			}
 		}
 		for _, f := range st.Flags {
+			if ws != "" {
+				if f.Subject.Kind == flow.SubjectItem && st.Items[f.Subject.ID].Workstream != ws {
+					continue
+				}
+				if f.Subject.Kind == flow.SubjectSlice && st.Slices[f.Subject.ID].Workstream != ws {
+					continue
+				}
+			}
 			if !f.Closed {
 				b.Flags = append(b.Flags, *f)
 			}
 		}
 	})
+	if !found {
+		writeError(w, &flow.Error{Code: flow.CodeNotFound, Message: "unknown workstream " + ws})
+		return
+	}
 	sort.Slice(b.Items, func(i, j int) bool { return idLess(b.Items[i].ID, b.Items[j].ID) })
 	sort.Slice(b.Slices, func(i, j int) bool { return idLess(b.Slices[i].ID, b.Slices[j].ID) })
 	sort.Slice(b.Runs, func(i, j int) bool { return idLess(b.Runs[i].ID, b.Runs[j].ID) })

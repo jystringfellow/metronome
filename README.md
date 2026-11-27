@@ -17,6 +17,12 @@ replays it. `metronome github poll` reads each submitted slice's PR through `gh`
 the PR opening, checks on its head, review and merge. The same events can still be entered by hand
 (`metronome github …`).
 
+Each item belongs to one workstream, with independent Ready, Plan, Execute, Review and Release limits.
+The approver cap remains global per person. Existing logs and backlog syncs without a workstream use
+`default`. A zero stage limit prevents new slot allocations in that stage; existing slots stay held.
+Ranks are local to each workstream. Without a filter, planning and claims choose eligible work across
+workstreams, and the board shows a section for each workstream.
+
 ```sh
 go build -o metronome ./cmd/metronome
 ./metronome serve --db metronome.db &
@@ -35,6 +41,11 @@ go build -o metronome ./cmd/metronome
 ./metronome submit R2 --branch metronome/I1.1
 ./metronome --as github github poll --every 1m  # follows the PR on that branch until it merges
 ./metronome board
+./metronome workstream create example --execute 0
+./metronome backlog sync --workstream example source.json
+./metronome workstream set example --execute 2
+./metronome workstream list
+./metronome board --workstream example
 ```
 
 Run `metronome help` for every command.

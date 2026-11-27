@@ -171,6 +171,41 @@ Recorded so the data model leaves room for it. Nothing here is in the proof of c
 - **An item flows through the workstream that pulled it** and keeps its link to the source. The source's view
   is a query across every item linked to it.
 
+## Decided by the maintainer (2026-11-27): workstreams, minimal first cut
+
+- Each workstream has a name and five stage limits, defaulting to today's config. The per-approver cap stays
+  global per person. Zero capacity is allowed. Anyone may create a workstream; create, set and list are CLI
+  commands. Items belong to exactly one workstream; ranks are local to it. Sync, plan start, next and board
+  accept a workstream filter. Existing logs replay into `default`. Pull by reference and subscriptions remain
+  designed, not built, following the decisions of 2026-11-26.
+
+## Agent decision (2026-11-27): implementing workstreams
+
+- Across workstreams, priority classes (rework, held slots, front) win first, then position in each workstream's
+  own priority order, then oldest item, workstream name and ID. Planning uses front, position and the same
+  tie-breakers. This avoids comparing unrelated source ranks, while keeping the old single-stream order.
+- Names match `^[a-z0-9][a-z0-9._-]{0,63}$` for URL path compatibility. Creation and limit edits record all five
+  resolved limits to keep replay independent of later defaults. `default` follows config until explicitly set.
+- Ready zero adds nothing; the global refill threshold is compared against each workstream's Ready usage.
+  This preserves the current refill policy. Refs remain globally unique and known refs are skipped, since moving
+  items by reference is not implemented.
+- Lowering limits retains held slots; no new slot is allocated while usage meets or exceeds the limit. Release
+  increases fill waiting items immediately, and a freed Release slot goes to the same workstream only, so
+  release capacity is neither stranded nor transferred to another board.
+- The board's top-level limits remain config defaults and usage remains aggregate, for existing consumers.
+  Workstream views carry their own limits and usage. The claim event and claim result name the workstream for
+  auditing and the future brief. No source link field is needed yet; absence means none and a later field is
+  additive.
+
+## Open (2026-11-27): workstream follow-up
+
+- Who may change limits once membership and ownership are built? For now anyone can, with the actor recorded.
+- Should sync report refs skipped because they already belong to a different workstream?
+- Should the Ready refill threshold become per workstream?
+- This branch lacks the main branch's claim brief, `metronome run`, runners guide and web board. On merge,
+  carry `claim.workstream` from `flow.Claim` into the brief; carry `--workstream` into `next` and `run` and the
+  runners guide (`docs/runners.md`); group the web board by workstream.
+
 ## Proposed (2026-11-26), not decided
 
 - **Release and Monitor read signal adapters.** An adapter records evidence on an item from a feature flag
@@ -272,8 +307,9 @@ Choices made while building step 1 where SPEC.md was silent. Each is easy to cha
   their timeout.
 - **An answered ask leaves a slice stalled:** it keeps its slots, and the next claim resumes it.
 - **Abandoning a run (`drop`) leaves the slice stalled too,** per the decided waiting states.
-- **Claim order:** rework first, then slices already holding slots, then parked slices returned to the front, then
-  new slices by backlog rank.
+- **Claim order within a workstream:** rework first, then slices already holding slots, then parked slices
+  returned to the front, then new slices by backlog rank. See the 2026-11-27 workstream ordering rule for
+  selection across workstreams.
 - **Moving into review needs green checks on the PR's head.** The per-approver cap is shown on the board but not
   enforced, because a person can mark a PR ready on GitHub at any time.
 - **An approval must name the PR's current head SHA,** or it is refused as stale. A moved head withdraws the

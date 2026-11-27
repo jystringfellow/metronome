@@ -54,15 +54,15 @@ func must(t *testing.T, _ flow.Result, err error) {
 
 func submittedSlice(t *testing.T, eng *flow.Engine) {
 	ctx := context.Background()
-	r, err := eng.SyncBacklog(ctx, "pat", "", []flow.BacklogItem{{Ref: "ACME-1", Title: "Add export", Owner: "pat", PredictedTier: 2}})
+	r, err := eng.SyncBacklog(ctx, "pat", "", "", []flow.BacklogItem{{Ref: "ACME-1", Title: "Add export", Owner: "pat", PredictedTier: 2}})
 	must(t, r, err)
-	r, err = eng.StartPlan(ctx, "agent", "", "")
+	r, err = eng.StartPlan(ctx, "agent", "", "", "")
 	must(t, r, err)
 	r, err = eng.ProposePlan(ctx, "agent", "", "I1", []flow.SliceSpec{{Title: "API endpoint", Repo: "acme/app", Approvers: []string{"rev"}}}, "")
 	must(t, r, err)
 	r, err = eng.ApprovePlan(ctx, "pat", "", "I1", nil)
 	must(t, r, err)
-	r, err = eng.Claim(ctx, "laptop", "", "laptop", "")
+	r, err = eng.Claim(ctx, "laptop", "", "laptop", "", "")
 	must(t, r, err)
 	r, err = eng.Submit(ctx, "laptop", "", "R1", "metronome/I1.1")
 	must(t, r, err)
@@ -257,16 +257,16 @@ func TestAFailingLookupIsReportedAndTheRestOfThePollGoesOn(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	r, err := eng.SyncBacklog(ctx, "pat", "", []flow.BacklogItem{{Ref: "A", Title: "a", Owner: "pat"}})
+	r, err := eng.SyncBacklog(ctx, "pat", "", "", []flow.BacklogItem{{Ref: "A", Title: "a", Owner: "pat"}})
 	must(t, r, err)
-	r, err = eng.StartPlan(ctx, "agent", "", "")
+	r, err = eng.StartPlan(ctx, "agent", "", "", "")
 	must(t, r, err)
 	r, err = eng.ProposePlan(ctx, "agent", "", "I1", []flow.SliceSpec{{Title: "a", Repo: "acme/app"}, {Title: "b", Repo: "acme/app"}}, "")
 	must(t, r, err)
 	r, err = eng.ApprovePlan(ctx, "pat", "", "I1", nil)
 	must(t, r, err)
 	for i, branch := range []string{"metronome/broken", "metronome/I1.2"} {
-		r, err = eng.Claim(ctx, "laptop", "", "laptop", "")
+		r, err = eng.Claim(ctx, "laptop", "", "laptop", "", "")
 		must(t, r, err)
 		r, err = eng.Submit(ctx, "laptop", "", []string{"R1", "R2"}[i], branch)
 		must(t, r, err)
@@ -308,7 +308,7 @@ func TestAResubmitOnTheSameHeadAfterFailedChecksStillReachesReview(t *testing.T)
 	}
 
 	ctx := context.Background()
-	r, err := eng.Claim(ctx, "laptop", "", "laptop", "")
+	r, err := eng.Claim(ctx, "laptop", "", "laptop", "", "")
 	must(t, r, err)
 	r, err = eng.Submit(ctx, "laptop", "", "R2", "metronome/I1.1")
 	must(t, r, err)
@@ -393,7 +393,7 @@ func TestASliceInReviewWhoseHeadTurnsRedGoesBackForReworkAndReturnsWhenGreen(t *
 	if res := poll(); len(res.Recorded) != 0 {
 		t.Fatalf("poll recorded stalled slice: %v", res.Recorded)
 	}
-	r, err := eng.Claim(ctx, "laptop", "", "laptop", "")
+	r, err := eng.Claim(ctx, "laptop", "", "laptop", "", "")
 	must(t, r, err)
 	r, err = eng.Submit(ctx, "laptop", "", "R2", "metronome/I1.1")
 	must(t, r, err)
@@ -533,7 +533,7 @@ func TestACloseOfAStalledSlicesPRIsReported(t *testing.T) {
 	if sl := slice(t, eng); sl.Status != flow.SliceStalled || !sl.Rework || sl.PR == nil {
 		t.Fatalf("slice after red checks = %+v", sl)
 	}
-	r, err := eng.Claim(ctx, "laptop", "", "laptop", "")
+	r, err := eng.Claim(ctx, "laptop", "", "laptop", "", "")
 	must(t, r, err)
 	if sl := slice(t, eng); sl.Status != flow.SliceRunning {
 		t.Fatalf("slice after claiming rework = %+v", sl)
@@ -608,7 +608,7 @@ func TestMergesAndClosesOfAQueuedRunningOrFlaggedSlicesPRAreReportedAndNotRecord
 	}
 
 	snap.State, snap.MergedBy = github.PROpen, ""
-	r, err := eng.Claim(ctx, "laptop", "", "laptop", "")
+	r, err := eng.Claim(ctx, "laptop", "", "laptop", "", "")
 	must(t, r, err)
 	assertQuietPoll(flow.SliceRunning)
 	snap.State = github.PRClosed

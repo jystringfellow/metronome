@@ -69,6 +69,7 @@ func NewEngine(ctx context.Context, cfg Config, store Store, clock func() time.T
 		clock = time.Now
 	}
 	e := &Engine{cfg: cfg, store: store, clock: clock, state: NewState(), byID: map[string]int{}}
+	e.state.Workstreams[DefaultWorkstream].Limits = cfg.Limits.Stages()
 	events, err := store.Load(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("load events: %w", err)
