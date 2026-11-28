@@ -804,8 +804,9 @@ Agent decisions (2026-11-28):
 
 ## Decided by the maintainer (2026-11-28): hosted shadow mode
 
-One hosted instance runs `serve` with SQLite on persistent storage, intake, publish and GitHub polling beside
-it, and an authenticating proxy in front of the board. Laptops do not write to it yet; OIDC and runner tokens
+One hosted instance runs `serve` with its event store, intake, publish and GitHub polling beside it, and an
+authenticating proxy in front of the board. PostgreSQL is the recommended default store for hosted instances
+and SQLite remains supported; operators choose (see the PostgreSQL store). Laptops do not write to it yet; OIDC and runner tokens
 come later. Publish a generic image to GitHub's container registry and a generic Helm chart. Operators extend
 the image with their own tools and maintain their own values and infrastructure elsewhere.
 
