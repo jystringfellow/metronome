@@ -1,0 +1,11 @@
+.git
+.github
+.kapellmeister
+**/*.db
+**/*.db-wal
+**/*.db-shm
+metronome
+dist/
+**/.env
+**/.env.*
+**/*.pem

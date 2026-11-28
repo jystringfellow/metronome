@@ -12,10 +12,12 @@ Metronome is a design and an early proof of concept.
 - [docs/backlog.md](docs/backlog.md): the backlog JSON contract.
 - [docs/intake.md](docs/intake.md): writing source commands for scheduled intake and publishing.
 - [docs/operations.md](docs/operations.md): health checks, database backups and restore.
+- [docs/container.md](docs/container.md): running and extending the container image.
+- [docs/releasing.md](docs/releasing.md): publishing and signing releases.
 
 ## What runs today
 
-Build step 1 of the SPEC, local only: one `metronome` binary holding an HTTP service, a CLI and an append-only
+Build step 1 of the SPEC: one `metronome` binary holding an HTTP service, a CLI and an append-only
 event log in SQLite. Items, slices, runs, slots and asks are all derived from the log, so restarting the service
 replays it. `metronome github poll` reads each submitted slice's PR through `gh` and records what GitHub shows:
 the PR opening, checks on its head, review and merge. It also returns a slice waiting for rework to review
@@ -105,7 +107,7 @@ and usage, live lease countdowns, open asks and readable recent activity. Switch
 label using links that update the page address, without changing capacity totals. All workstreams' live
 work appears before the compact, grouped Ready and shelved backlogs. The page refreshes every few seconds,
 highlights changes, ships inside the binary and changes nothing. The page and API are unauthenticated;
-keep the service on loopback.
+keep the service on loopback or behind an authenticating proxy.
 
 For a hosted service, keep the board and API behind an authenticating proxy. See
 [running as a service](docs/operations.md) for probes and online backups.
@@ -121,6 +123,12 @@ The command receives the claim and service details in `METRONOME_*` environment 
 renews the lease every five minutes (`--every` overrides this), submits on success with a branch in
 `METRONOME_BRANCH_FILE`, and otherwise drops the run, keeping the slice's slots. A command that already closed
 its run is left alone. Metronome prints its own messages to stderr.
+
+## Container image
+
+The multi-architecture image packages the same binary and `gh` for single-instance hosted shadow mode.
+See [running a container](docs/container.md) for persistent storage, adjacent intake and publish loops,
+and extending the generic image. Registry publication requires the maintainer-reviewed release workflow.
 
 ## Developing
 

@@ -3,6 +3,36 @@
 This file records what has been decided about Metronome, what the review of SPEC.md found, and what is still
 open.
 
+## Decided by the maintainer (2026-11-28): hosted shadow mode
+
+- Run one server with SQLite on a persistent volume, the workstreams' intake and publish loops and
+  GitHub poller alongside it, and an authenticating proxy in front of the board. No laptop writers yet;
+  OIDC and runner tokens come later.
+- Publish a generic image and Helm chart in the public repository. Organisations extend the image
+  with FROM and keep their own tools, values and infrastructure elsewhere.
+
+## Agent decision (2026-11-28): the container image
+
+- Alpine provides a small base with a shell and package manager for derived images. Build a static
+  Go binary with `CGO_ENABLED=0`, `-trimpath` and `-ldflags='-s -w'` for the target architecture.
+  Pin gh by release version and verify its tarball against the release checksum list before extraction.
+- Use BuildKit's bundled Dockerfile frontend: neither build needs a separate frontend image pull.
+- Run with numeric UID/GID 65532 and tini as PID 1. The container default binds all interfaces and
+  stores the database under `/data`; the binary's defaults remain unchanged. Do not declare a VOLUME,
+  so persistent storage is explicit rather than an anonymous volume.
+- Stable version tags move version aliases and `latest`; prereleases only publish their full version.
+  Main publishes `edge` and `main-<sha>` separately. Propose BuildKit SBOM and provenance attestations
+  and keyless Cosign signing by digest; the maintainer installs and reviews the workflow outside the
+  protected agent sandbox.
+
+## Open (2026-11-28): container image follow-up
+
+- Whether to pin actions and base images by digest and verify gh's release attestation as well as checksums.
+- Whether to add a version command or build stamp, a health endpoint or HEALTHCHECK, and environment
+  variables for the server address and database.
+- When to cut the first release and whether pre-1.0 releases should publish a `0` alias. The maintainer
+  must confirm public package visibility after first publication.
+
 ## Decided (2026-11-27): backlog item labels
 
 - Agent's decisions: accept optional source labels, trimming and collapsing whitespace, lowercasing,
