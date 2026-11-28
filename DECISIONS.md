@@ -65,10 +65,11 @@ open.
 - Default to restricted security settings and provide emptyDir mounts for HOME and /tmp.
 - Test the documented values using Helm lint and template. Skip when Helm is unavailable locally,
   but require it in CI with `METRONOME_TEST_HELM=1`.
+- CI runs `helm lint --strict` and `TestHelmChart` with `METRONOME_TEST_HELM=1` in a `helm` job pinned to Helm v4.3.1,
+  added outside the sandbox (2026-11-28). Null or empty map values render as empty maps.
 
 ## Open (2026-11-28): Helm chart follow-up
 
-- Add the proposed CI job for Helm lint and the template test outside this sandbox (`.github/` is off limits).
 - Whether to publish the chart as OCI to GHCR and version it with the image so appVersion can default the tag.
 - Whether to ship a NetworkPolicy: the direct pod port remains reachable in-cluster even with a proxy.
 - Whether to default to a specific proxy or accept an existing ConfigMap.

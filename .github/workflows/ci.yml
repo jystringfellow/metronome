@@ -55,3 +55,16 @@ jobs:
             exit 1
           fi
           grep -E -- '--- (PASS|FAIL|SKIP): Test(Contract|Postgres|ServePostgres)' test.log
+
+  helm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: azure/setup-helm@v4
+        with:
+          version: v4.3.1
+      - run: helm lint --strict deploy/helm/metronome --set image.tag=0.0.0 --set database.postgres.existingSecret=example
+      - run: METRONOME_TEST_HELM=1 go test -count=1 -run '^TestHelmChart$' -v ./cmd/metronome

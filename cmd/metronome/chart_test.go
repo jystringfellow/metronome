@@ -197,6 +197,12 @@ func TestHelmChart(t *testing.T) {
 		chartKinds(t, documents, "Deployment", "Service", "ConfigMap", "ServiceAccount")
 		chartContains(t, documents["Deployment"], "claimName: example-data")
 	})
+	t.Run("null maps", func(t *testing.T) {
+		documents := mustRender(t, "-f", postgres, "--set", "podAnnotations=null", "--set", "podLabels=null")
+		chartContains(t, documents["Deployment"], "checksum/config:", "app.kubernetes.io/name: metronome")
+		documents = mustRender(t, "-f", sqlite, "--set", "database.sqlite.persistence.annotations=null")
+		chartContains(t, documents["PersistentVolumeClaim"], "helm.sh/resource-policy: keep")
+	})
 	t.Run("config", func(t *testing.T) {
 		example := chartExamples(t, "../../docs/configuration.md", "json", 1)[0]
 		values := func(t *testing.T, config string) string {

@@ -15,10 +15,10 @@ spec:
   template:
     metadata:
       annotations:
-        {{- merge (dict "checksum/config" (include (print $.Template.BasePath "/configmap.yaml") . | sha256sum)) .Values.podAnnotations | toYaml | nindent 8 }}
+        {{- merge (dict "checksum/config" (include (print $.Template.BasePath "/configmap.yaml") . | sha256sum)) (.Values.podAnnotations | default dict) | toYaml | nindent 8 }}
       labels:
         {{- $labels := include "metronome.labels" . | fromYaml }}
-        {{- merge $labels .Values.podLabels | toYaml | nindent 8 }}
+        {{- merge $labels (.Values.podLabels | default dict) | toYaml | nindent 8 }}
     spec:
       serviceAccountName: {{ include "metronome.serviceAccountName" . }}
       automountServiceAccountToken: false
