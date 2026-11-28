@@ -9,6 +9,8 @@ Once the [release workflow](releasing.md) is installed and the package is public
 track patch releases; `edge` follows main. The examples use `1.4.2` as an illustrative release tag;
 replace it with a published tag.
 
+For Kubernetes installations, see the [Helm chart guide](kubernetes.md).
+
 ## Persistent data
 
 ```sh

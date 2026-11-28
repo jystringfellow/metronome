@@ -6,6 +6,8 @@ board and API behind an authenticating proxy; probes can reach the service direc
 PostgreSQL is recommended for hosted instances. SQLite remains the fully supported default for a laptop
 or single small host; no PostgreSQL installation is required. Select the store using `--db` or `--db-env`.
 
+For Kubernetes installations, see the [Helm chart guide](kubernetes.md).
+
 ## PostgreSQL
 
 Set `METRONOME_DB` to the connection URL using your secret store, and start Metronome with:

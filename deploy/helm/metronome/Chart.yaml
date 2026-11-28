@@ -1,0 +1,5 @@
+apiVersion: v2
+name: metronome
+description: A single-instance AI delivery control plane
+type: application
+version: 0.1.0
