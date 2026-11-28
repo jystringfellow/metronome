@@ -52,12 +52,8 @@ const linkedPRsQuery = `query($owner: String!, $repo: String!, $label: String!, 
 }`
 
 func (g GH) LinkedPRs(ctx context.Context, repo, label string) (map[int][]string, error) {
-	run := g.Run
-	if run == nil {
-		run = runGH
-	}
 	owner, name, _ := strings.Cut(repo, "/")
-	data, err := run(ctx, "api", "graphql", "--paginate", "-f", "query="+linkedPRsQuery, "-f", "owner="+owner, "-f", "repo="+name, "-f", "label="+label)
+	data, err := g.call(ctx, "api", "graphql", "--paginate", "-f", "query="+linkedPRsQuery, "-f", "owner="+owner, "-f", "repo="+name, "-f", "label="+label)
 	if err != nil {
 		return nil, err
 	}
@@ -131,12 +127,8 @@ func ParseLinkedPRs(data []byte) (map[int][]string, error) {
 }
 
 func (g GH) OpenIssues(ctx context.Context, repo, label string) ([]Issue, error) {
-	run := g.Run
-	if run == nil {
-		run = runGH
-	}
 	query := url.Values{"state": {"open"}, "labels": {label}, "per_page": {"100"}, "sort": {"created"}, "direction": {"asc"}}
-	data, err := run(ctx, "api", "--paginate", "repos/"+repo+"/issues?"+query.Encode())
+	data, err := g.call(ctx, "api", "--paginate", "repos/"+repo+"/issues?"+query.Encode())
 	if err != nil {
 		return nil, err
 	}
@@ -161,11 +153,7 @@ const projectRanksQuery = `query($owner: String!, $number: Int!, $field: String!
 }`
 
 func (g GH) ProjectRanks(ctx context.Context, project Project, field, repo string) (map[int]float64, error) {
-	run := g.Run
-	if run == nil {
-		run = runGH
-	}
-	data, err := run(ctx, "api", "graphql", "--paginate", "-f", "query="+projectRanksQuery, "-f", "owner="+project.Owner, "-F", "number="+strconv.Itoa(project.Number), "-f", "field="+field)
+	data, err := g.call(ctx, "api", "graphql", "--paginate", "-f", "query="+projectRanksQuery, "-f", "owner="+project.Owner, "-F", "number="+strconv.Itoa(project.Number), "-f", "field="+field)
 	if err != nil {
 		return nil, err
 	}

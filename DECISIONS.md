@@ -3,6 +3,29 @@
 This file records what has been decided about Metronome, what the review of SPEC.md found, and what is still
 open.
 
+## Agent decision (2026-11-28): GitHub App authentication
+
+- Keep App configuration in the environment, validate at service startup, and mint lazily through a shared
+  single-flight source. Refresh ten minutes early or at half-life for shorter tokens.
+- Retry transport errors, HTTP 429 and 5xx up to four times with waits of 1s, 2s and 4s. Fall back to a
+  cached token only while more than one minute remains. Report safe error categories and HTTP status only,
+  not arbitrary endpoint messages, which could echo credentials.
+- Give GitHub clients and intake/publish children the current `GH_TOKEN` (also `GH_ENTERPRISE_TOKEN` for
+  non-public API hosts); strip App settings from children and runners. Redact known credentials by format
+  and exact issued value, and refuse intake output or publisher state containing issued tokens. Unrelated
+  token-shaped content is allowed in GitHub data; pattern matching is only for diagnostic redaction.
+- At each successful mint, discard exact values whose installation tokens have expired. Keep overlapping
+  unexpired tokens protected without making each scan grow with service uptime.
+- Explain the explicit assignee requirement for App publishers. No event or replay changes.
+
+## Open (2026-11-28): App authentication follow-up
+
+- Whether to add a config-file block, narrow installations by request-body permissions or repository list,
+  honour `Retry-After`, handle multiple installations, or give runner commands an App token.
+- Whether to add a short cooldown after refresh failure while using a still-valid cached token.
+- Unverified: GHES and `GH_HOST` end-to-end, and the exact permission requirements per feature against
+  a live GitHub installation.
+
 ## Decided by the maintainer (2026-11-28): hosted shadow mode
 
 - Run one server with its event store (see the PostgreSQL store decision), the workstreams' intake and publish loops and

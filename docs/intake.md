@@ -101,6 +101,8 @@ Create the workstream before running intake. The command reads all open issues w
 the project's numeric `--rank-field` (default `Rank`); project access requires the `read:project` scope
 (`gh auth refresh -s read:project`). Ranked issues come first in ascending rank order; unranked issues
 come last. Ties and issues without a project are ordered oldest first, then by issue number.
+With a [GitHub App](github-app.md), grant the corresponding installation permissions instead of refreshing
+a person's login. Projects must be organisation-owned.
 
 | Backlog field | Issue mapping |
 | --- | --- |
@@ -288,6 +290,7 @@ metronome publish --workstream example --name board --every 1m -- metronome gith
 ```
 
 The command uses `gh` and requires project write access (`gh auth refresh -s project`) and issue write access.
+For a [GitHub App](github-app.md), grant the publisher permissions and give `--assignee LOGIN` explicitly.
 It resolves issues by `OWNER/NAME#N` or by a unique `Metronome: REF` line in a project issue's body. Unmatched
 or ambiguous body refs are reported and skipped. An issue addressed directly outside the project can still
 receive claims, PR comments and closure, but its Status is skipped. Failed reads or writes and missing project

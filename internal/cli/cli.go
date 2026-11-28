@@ -73,6 +73,9 @@ People:
   release-done ITEM               finish the release of a tier 2 or 3 item
 
 GitHub:
+  GitHub App: METRONOME_GITHUB_APP_ID, METRONOME_GITHUB_APP_INSTALLATION_ID,
+              METRONOME_GITHUB_APP_PRIVATE_KEY or METRONOME_GITHUB_APP_PRIVATE_KEY_FILE;
+              optional METRONOME_GITHUB_API_URL (see docs/github-app.md)
   github issues --repo OWNER/NAME [--label L] [--project OWNER/N [--rank-field Rank]] [--owner WHO] [--instance NAME]
                          print backlog JSON from open labelled issues, for intake; see docs/intake.md
   github publish --project OWNER/N --instance NAME [--status-field Status] [--map TRANSITION=OPTION] [--assignee LOGIN]
@@ -101,6 +104,7 @@ Global flags (before the command): --server URL (or METRONOME_URL), --as WHO (or
 `
 
 type app struct {
+	auth         *appAuth
 	out, errOut  io.Writer
 	client       *api.Client
 	requestID    string
@@ -116,6 +120,7 @@ type app struct {
 }
 
 type Deps struct {
+	Getenv       func(string) string
 	HTTP         *http.Client
 	GitHub       github.Source
 	PullRequests github.PRSource
@@ -140,20 +145,11 @@ func RunWithDeps(ctx context.Context, args []string, out, errOut io.Writer, deps
 	if deps.HTTP == nil {
 		deps.HTTP = &http.Client{Timeout: 30 * time.Second}
 	}
-	if deps.GitHub == nil {
-		deps.GitHub = github.GH{}
-	}
-	if deps.PullRequests == nil {
-		deps.PullRequests, _ = deps.GitHub.(github.PRSource)
-	}
-	if deps.Issues == nil {
-		deps.Issues = github.GH{}
+	if deps.Getenv == nil {
+		deps.Getenv = os.Getenv
 	}
 	if deps.Boards == nil {
 		deps.Boards = ado.AZ{}
-	}
-	if deps.Projects == nil {
-		deps.Projects = github.GH{}
 	}
 	if deps.Stdin == nil {
 		deps.Stdin = os.Stdin
@@ -181,8 +177,21 @@ func RunWithDeps(ctx context.Context, args []string, out, errOut io.Writer, deps
 		global.Usage()
 		return 2
 	}
-	a := &app{out: out, errOut: errOut, requestID: *requestID, prs: deps.GitHub, pullRequests: deps.PullRequests, issues: deps.Issues, boards: deps.Boards, projects: deps.Projects, stdin: deps.Stdin, terminal: deps.Terminal, now: deps.Now, wait: deps.Wait,
+	a := &app{auth: &appAuth{getenv: deps.Getenv, log: errOut}, out: out, errOut: errOut, requestID: *requestID, prs: deps.GitHub, pullRequests: deps.PullRequests, issues: deps.Issues, boards: deps.Boards, projects: deps.Projects, stdin: deps.Stdin, terminal: deps.Terminal, now: deps.Now, wait: deps.Wait,
 		client: &api.Client{BaseURL: *server, Actor: *actor, HTTP: deps.HTTP}}
+	gh := github.GH{Environ: a.githubEnv, Redact: a.redact, Holds: a.holds}
+	if a.prs == nil {
+		a.prs = gh
+	}
+	if a.pullRequests == nil {
+		a.pullRequests, _ = a.prs.(github.PRSource)
+	}
+	if a.issues == nil {
+		a.issues = gh
+	}
+	if a.projects == nil {
+		a.projects = gh
+	}
 	if err := a.dispatch(ctx, rest[0], rest[1:]); err != nil {
 		var status exitStatus
 		if errors.As(err, &status) {
@@ -190,10 +199,10 @@ func RunWithDeps(ctx context.Context, args []string, out, errOut io.Writer, deps
 		}
 		var ue usageError
 		if errors.As(err, &ue) {
-			fmt.Fprintf(errOut, "metronome %s: %s\n", rest[0], ue.msg)
+			fmt.Fprintf(errOut, "metronome %s: %s\n", rest[0], a.redact(ue.msg))
 			return 2
 		}
-		fmt.Fprintf(errOut, "metronome %s: %v\n", rest[0], err)
+		fmt.Fprintf(errOut, "metronome %s: %s\n", rest[0], a.redact(err.Error()))
 		return 1
 	}
 	return 0
@@ -213,6 +222,11 @@ func envOr(key, def string) string {
 }
 
 func (a *app) dispatch(ctx context.Context, cmd string, args []string) error {
+	if cmd == "serve" || cmd == "intake" || cmd == "publish" || (cmd == "github" && len(args) > 0 && (args[0] == "poll" || args[0] == "adopt" || args[0] == "issues" || args[0] == "publish")) {
+		if err := a.loadGitHubApp(); err != nil {
+			return err
+		}
+	}
 	switch cmd {
 	case "serve":
 		return a.serve(ctx, args)
@@ -275,6 +289,9 @@ func (a *app) serve(ctx context.Context, args []string) error {
 	if err := parse(fs, args, 0); err != nil {
 		return err
 	}
+	if a.auth != nil && a.auth.source != nil {
+		fmt.Fprintf(a.errOut, "github app: %s\n", a.auth.source)
+	}
 	db, err := resolveDB(fs, "db", *dbPath, "db-env", *dbEnv)
 	if err != nil {
 		return err
@@ -325,6 +342,12 @@ func (a *app) serve(ctx context.Context, args []string) error {
 		local.client = &api.Client{BaseURL: "http://example.com", Actor: cfg.Actor, HTTP: api.LocalHTTP(svc)}
 		local.requestID = ""
 		local.out, local.errOut = synchronizedOutputs(a.out, a.errOut)
+		if local.auth != nil {
+			local.auth.log = local.errOut
+			if local.auth.source != nil {
+				local.auth.source.Log = local.errOut
+			}
+		}
 		a = &local
 		loops = a.instanceLoops(cfg)
 		fmt.Fprintf(a.out, "metronome serving on http://%s with %s; config %s: %d workstream(s), %d loop(s)\n", ln.Addr(), description, *configPath, len(cfg.Workstreams), len(loops))
@@ -969,7 +992,7 @@ func (a *app) githubPoll(ctx context.Context, args []string) error {
 	defer t.Stop()
 	for {
 		if err := a.pollOnce(ctx, p); err != nil {
-			fmt.Fprintf(a.errOut, "poll: %v\n", err)
+			fmt.Fprintf(a.errOut, "poll: %s\n", a.redact(err.Error()))
 		}
 		select {
 		case <-ctx.Done():
@@ -989,13 +1012,13 @@ func (a *app) pollOnce(ctx context.Context, p github.Poller) error {
 
 func (a *app) printPoll(res github.PollResult) error {
 	for _, act := range res.Recorded {
-		fmt.Fprintln(a.out, "recorded "+act.String())
+		fmt.Fprintln(a.out, "recorded "+a.redact(act.String()))
 	}
 	for _, n := range res.Notes {
-		fmt.Fprintln(a.out, "note "+n)
+		fmt.Fprintln(a.out, "note "+a.redact(n))
 	}
 	for _, e := range res.Errors {
-		fmt.Fprintln(a.errOut, "error "+e)
+		fmt.Fprintln(a.errOut, "error "+a.redact(e))
 	}
 	if len(res.Errors) > 0 {
 		return fmt.Errorf("%d slice(s) could not be polled", len(res.Errors))

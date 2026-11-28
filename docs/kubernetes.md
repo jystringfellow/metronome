@@ -50,6 +50,24 @@ helm install metronome deploy/helm/metronome -f values.yaml
 ```
 
 The URL is read by `--db-env METRONOME_DB`, from the existing Secret's `url` key by default.
+
+For a [GitHub App](github-app.md), replace the `GH_TOKEN` entry with these values. The existing Secret
+contains the private key, not an installation token:
+
+```yaml
+extraEnv:
+  - name: METRONOME_GITHUB_APP_ID
+    value: "123"
+  - name: METRONOME_GITHUB_APP_INSTALLATION_ID
+    value: "456"
+secretEnv:
+  - name: METRONOME_GITHUB_APP_PRIVATE_KEY
+    secretName: metronome-github
+    key: app-key
+```
+
+Metronome refreshes installation tokens for the loops. Give an App publisher `--assignee pat`.
+
 No database PVC is created. Use a different database or schema for each release; an advisory lock
 enforces a single writer. Use the provider's backup and restore facilities. To migrate an existing
 SQLite event log, stop its writer and follow the `migrate-store` procedure in [operations](operations.md).

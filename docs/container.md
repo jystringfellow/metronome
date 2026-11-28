@@ -80,6 +80,18 @@ creation if it already exists. Give each token the permissions its command needs
 [intake and publishing](intake.md) and [the poller](runners.md). Only the server accesses the
 database. The hosted shadow deployment does not yet accept writes from laptops.
 
+To use a [GitHub App](github-app.md) instead of `GH_TOKEN`, supply the IDs and private key to each
+Metronome container running GitHub commands. For example, with the secret store injecting the key contents:
+
+```sh
+docker run -d --name metronome-poll --network metronome \
+  -e METRONOME_GITHUB_APP_ID=123 -e METRONOME_GITHUB_APP_INSTALLATION_ID=456 \
+  -e METRONOME_GITHUB_APP_PRIVATE_KEY -e METRONOME_URL=http://metronome:7340 \
+  "$IMAGE" --as github github poll --every 1m
+```
+
+For a supervised instance supply these settings to `serve` instead. Use `--assignee pat` for an App publisher.
+
 ## Extend the image
 
 Organisations can add other intake tools (for example, the Azure CLI for `metronome ado items`)

@@ -11,6 +11,7 @@ Metronome is a design and an early proof of concept.
 - [docs/runners.md](docs/runners.md): how agents take work and hand it back.
 - [docs/backlog.md](docs/backlog.md): the backlog JSON contract.
 - [docs/intake.md](docs/intake.md): writing source commands for scheduled intake and publishing.
+- [docs/github-app.md](docs/github-app.md): using an installation identity for GitHub integrations.
 - [docs/operations.md](docs/operations.md): health checks, database backups and restore.
 - [docs/configuration.md](docs/configuration.md): declare workstreams and supervised loops in one file.
 - [docs/container.md](docs/container.md): running and extending the container image.

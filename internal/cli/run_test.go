@@ -70,6 +70,14 @@ func runHelper(args []string) (int, error) {
 				return 0, err
 			}
 			args = args[2:]
+		case "file-output":
+			for _, file := range []*os.File{os.Stdout, os.Stderr} {
+				info, err := file.Stat()
+				if err != nil || !info.Mode().IsRegular() {
+					return 0, fmt.Errorf("runner output is not a direct file")
+				}
+			}
+			args = args[1:]
 		case "remove":
 			if err := os.Remove(os.Getenv("METRONOME_BRANCH_FILE")); err != nil {
 				return 0, err
@@ -288,6 +296,7 @@ func TestRunClosesOnCommandExit(t *testing.T) {
 
 func TestRunEnvironment(t *testing.T) {
 	e := newBriefEnv(t)
+	t.Setenv("METRONOME_GITHUB_APP_PRIVATE_KEY", "private-fixture")
 	t.Setenv("METRONOME_RUN_ID", "stale")
 	t.Setenv("METRONOME_URL", "http://example.com")
 	t.Setenv("METRONOME_ACTOR", "stale")
@@ -300,6 +309,9 @@ func TestRunEnvironment(t *testing.T) {
 	var seen helperEnvironment
 	if err := json.Unmarshal(data, &seen); err != nil {
 		t.Fatal(err)
+	}
+	if _, exists := seen.Vars["METRONOME_GITHUB_APP_PRIVATE_KEY"]; exists {
+		t.Fatal("runner received the App private key")
 	}
 	for key, want := range map[string]string{
 		"METRONOME_RUN_ID": "R1", "METRONOME_SLICE_ID": "I1.1", "METRONOME_RUNNER": "laptop",
@@ -320,6 +332,20 @@ func TestRunEnvironment(t *testing.T) {
 	if !reflect.DeepEqual(decodeBrief(t, seen.Brief), decodeBrief(t, want)) || seen.Brief != want {
 		t.Fatalf("brief = %s, want %s", seen.Brief, want)
 	}
+}
+
+func TestRunPreservesOutputFiles(t *testing.T) {
+	e := newBriefEnv(t)
+	output, err := os.Create(filepath.Join(e.dir, "output"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer output.Close()
+	args := append([]string{"--server", "http://example.com", "--as", "laptop", "run", "--runner", "laptop", "--"}, helper(t, "file-output", "branch", "metronome/I1.1")...)
+	if code := cli.RunWithDeps(t.Context(), args, output, output, e.deps()); code != 0 {
+		t.Fatal("runner output file descriptors were not preserved", code)
+	}
+	assertRunClosed(e, flow.CloseSubmitted, "metronome/I1.1")
 }
 
 func TestRunRenewsWhileCommandRuns(t *testing.T) {

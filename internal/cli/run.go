@@ -20,6 +20,7 @@ import (
 
 	"github.com/jystringfellow/metronome/internal/api"
 	"github.com/jystringfellow/metronome/internal/flow"
+	"github.com/jystringfellow/metronome/internal/githubapp"
 )
 
 type exitStatus int
@@ -95,7 +96,7 @@ func (a *app) runClaim(ctx context.Context, b brief, runner string, every time.D
 		return err
 	}
 	cmd := exec.Command(args[0], args[1:]...)
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(githubapp.WithoutAppSettings(os.Environ()),
 		"METRONOME_RUN_ID="+runID,
 		"METRONOME_SLICE_ID="+b.Claim.SliceID,
 		"METRONOME_RUNNER="+runner,
