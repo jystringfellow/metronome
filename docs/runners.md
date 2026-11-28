@@ -230,10 +230,33 @@ When the command exits, renewal stops before the wrapper closes the run:
 | Command exits non-zero | Drops the run, even if a branch was written. | Command's code |
 | Command is killed by a signal | Drops the run. | 128 + signal number |
 | Run already closed (for example, the agent asked) | Leaves the run alone and reports the conflict. | Command's code |
+| Service unreachable until after the lease expired | Reports lease expiry and the branch to resubmit, if any. | 1 if the command succeeded, otherwise the command's code |
+| Submit refused because the lease expired | Reports lease expiry and the branch to resubmit. | 1 |
+| Drop refused because the lease expired | Reports lease expiry; the slice is already stalled or parked. | Command's code |
 
 The branch file must contain a single branch name. Surrounding whitespace is trimmed. A missing, empty or
-multi-line file means no branch. A failure to close the run other than a conflict changes a successful
-command's exit code to 1. Read the messages as well as the exit code: exit 0 does not guarantee submission.
+multi-line file means no branch. A failure to close the run other than an already-closed conflict changes a
+successful command's exit code to 1, as does a submit refused because the lease expired. Read the messages
+as well as the exit code: exit 0 does not guarantee submission.
+
+After command exit, the wrapper retries submit or drop when the service is unreachable or returns HTTP
+500 or above. Each attempt has a 10-second timeout; delays start at one second and double up to 30 seconds.
+Retries stop on success, conflict or another non-retryable HTTP response, one minute past the last known
+renewed lease deadline (allowing for clock skew), 30 minutes after the first attempt, or SIGINT/SIGTERM
+received while closing. A signal still buffered from the command's exit does not prevent closing the run.
+Caller cancellation does not stop closing. Each attempt uses the same per-run request ID, so a lost
+response to a successful close can be retried safely. Pre-start drops remain single attempts.
+
+If the lease expired before the submit could be confirmed, `run` reports the expired lease, slice and branch
+on stderr. Claim the slice again and submit the branch under the new run, for example:
+
+```sh
+metronome next --runner laptop --slice I1.1
+metronome submit R2 --branch metronome/I1.1
+```
+
+Use the actual new run ID returned by `next`. If retries stop before expiry, the message instead explains
+how to close the existing run while its lease remains valid.
 
 `run` always forwards SIGTERM to the command and forwards SIGINT unless its standard input is a terminal.
 Cancellation of its caller forwards SIGTERM. The command and its own subprocesses stay in `run`'s process

@@ -86,8 +86,34 @@ open.
 - Always forward SIGTERM to the command and forward SIGINT only when stdin is not a terminal; cancellation
   of the caller forwards SIGTERM. Exit with the command's
   code (128 plus the signal number if killed by a signal), except that failure to close the run other than a
-  conflict changes a successful command's exit code to 1. Invalid usage exits 2; claiming or starting the
+  conflict changes a successful command's exit code to 1. A submit lost to lease expiry also exits 1,
+  as described in the closing retry decision below. Invalid usage exits 2; claiming or starting the
   command failing exits 1.
+
+## Agent decision (2026-11-27): metronome run retries closing its run
+
+- After the command exits, retry submit or drop on transport errors and HTTP 500 or above, with a 10-second
+  timeout per attempt and exponential backoff from one second to at most 30 seconds. Other HTTP errors,
+  including conflict, are not retried. Best-effort drops before command start remain single attempts.
+- Remember the latest lease deadline returned by a heartbeat without changing the renewal schedule or
+  conflict behaviour. Stop retrying one minute past the last known deadline to allow for clock skew, or
+  after 30 minutes from the first close attempt to bound retries even with a wrong clock or long lease.
+  The grace exceeds the maximum delay so there is an opportunity to learn about expiry from the service.
+- All close attempts use `metronome-run-<runID>-close` as their request ID; a committed close whose response
+  was lost is then recognised as a duplicate success. The global request ID still applies only to the claim.
+- Add `api.StatusError`, wrapping the original error without changing its text or flow error code, so the
+  CLI can distinguish server errors from permanent HTTP failures. Add read-only `GET /v1/runs/{id}` to
+  retrieve a run even when closed, without ticking, extending the earlier choice to read only the board and
+  run history. Use it once after a closing conflict to distinguish lease expiry from another closure.
+- A submit lost to lease expiry, whether confirmed by a conflict or inferred when retries give up, reports
+  the deadline, slice and branch to resubmit and changes a successful command's exit code to 1. A drop
+  overtaken by lease expiry keeps the conflict rule (the command's code). Giving up without an answer is
+  a failure to close, so exit 1 for a successful command or preserve a non-zero command code. Other
+  conflicts retain the existing exit-code rule.
+- SIGINT and SIGTERM received while closing stop retries as well as in-flight close attempts. Discard a
+  signal still buffered from the command's exit before watching for closing interrupts, so the run can
+  still close after the command is interrupted. Caller cancellation still does not prevent closing the
+  run after the command exits.
 
 ## Decided (2026-11-27): each interrupt reaches the command once
 
@@ -607,6 +633,9 @@ Choices made while building step 1 where SPEC.md was silent. Each is easy to cha
 ## Open
 
 Everything section 12 of SPEC.md marks Open or Unverified, plus:
+
+- 2026-11-27: whether the closing retry schedule and bounds should become flags, and whether a lost submit
+  should automatically raise an ask for the item owner.
 
 - 2026-11-27: agent's open questions: whether labels should update on items in Plan or later, and whether
   to allow non-ASCII labels.

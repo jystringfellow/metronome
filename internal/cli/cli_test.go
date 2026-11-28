@@ -21,9 +21,10 @@ import (
 )
 
 type env struct {
-	t    *testing.T
-	http *http.Client
-	dir  string
+	t     *testing.T
+	http  *http.Client
+	dir   string
+	clock *runClock
 }
 
 func intp(tier int) *int { return &tier }
@@ -42,12 +43,28 @@ func newEnv(t *testing.T) *env {
 }
 
 func newEnvWithStore(t *testing.T, events flow.Store) *env {
+	return newEnvWithClock(t, events, nil)
+}
+
+func newEnvWithClock(t *testing.T, events flow.Store, clock *runClock) *env {
 	t.Helper()
-	eng, err := flow.NewEngine(context.Background(), flow.DefaultConfig(), events, nil)
+	var now func() time.Time
+	if clock != nil {
+		now = clock.Now
+	}
+	eng, err := flow.NewEngine(context.Background(), flow.DefaultConfig(), events, now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &env{t: t, http: &http.Client{Transport: handlerTransport{api.Handler(eng)}}, dir: t.TempDir()}
+	return &env{t: t, http: &http.Client{Transport: handlerTransport{api.Handler(eng)}}, dir: t.TempDir(), clock: clock}
+}
+
+func (e *env) deps() cli.Deps {
+	deps := cli.Deps{HTTP: e.http}
+	if e.clock != nil {
+		deps.Now, deps.Wait = e.clock.Now, e.clock.Wait
+	}
+	return deps
 }
 
 func (e *env) run(as string, args ...string) (string, int) {
@@ -59,7 +76,7 @@ func (e *env) run(as string, args ...string) (string, int) {
 func (e *env) runOutput(as string, args ...string) (string, string, int) {
 	e.t.Helper()
 	var out, errOut bytes.Buffer
-	code := cli.RunWithHTTP(context.Background(), append([]string{"--server", "http://metronome.test", "--as", as}, args...), &out, &errOut, e.http)
+	code := cli.RunWithDeps(context.Background(), append([]string{"--server", "http://metronome.test", "--as", as}, args...), &out, &errOut, e.deps())
 	return out.String(), errOut.String(), code
 }
 
@@ -282,8 +299,12 @@ func (e *env) approvedItem(item flow.BacklogItem, slices []flow.SliceSpec) {
 }
 
 func newBriefEnv(t *testing.T) *env {
+	return newBriefEnvWithClock(t, nil)
+}
+
+func newBriefEnvWithClock(t *testing.T, clock *runClock) *env {
 	t.Helper()
-	e := newEnv(t)
+	e := newEnvWithClock(t, store.NewMemory(), clock)
 	e.approvedItem(flow.BacklogItem{
 		Ref: "ACME-1", Title: "Add export", Intent: "Let customers download their data\nInclude all records", Owner: "pat", PredictedTier: intp(1),
 	}, []flow.SliceSpec{

@@ -90,6 +90,8 @@ type app struct {
 	prs         github.Source
 	issues      github.IssueSource
 	terminal    func() bool
+	now         func() time.Time
+	wait        func(context.Context, time.Duration) error
 }
 
 type Deps struct {
@@ -97,6 +99,8 @@ type Deps struct {
 	GitHub   github.Source
 	Issues   github.IssueSource
 	Terminal func() bool
+	Now      func() time.Time
+	Wait     func(context.Context, time.Duration) error
 }
 
 func Run(ctx context.Context, args []string, out, errOut io.Writer) int {
@@ -120,6 +124,12 @@ func RunWithDeps(ctx context.Context, args []string, out, errOut io.Writer, deps
 	if deps.Terminal == nil {
 		deps.Terminal = func() bool { return isatty.IsTerminal(os.Stdin.Fd()) }
 	}
+	if deps.Now == nil {
+		deps.Now = time.Now
+	}
+	if deps.Wait == nil {
+		deps.Wait = waitDelay
+	}
 	global := flag.NewFlagSet("metronome", flag.ContinueOnError)
 	global.SetOutput(errOut)
 	global.Usage = func() { fmt.Fprint(errOut, usage) }
@@ -134,7 +144,7 @@ func RunWithDeps(ctx context.Context, args []string, out, errOut io.Writer, deps
 		global.Usage()
 		return 2
 	}
-	a := &app{out: out, errOut: errOut, requestID: *requestID, prs: deps.GitHub, issues: deps.Issues, terminal: deps.Terminal,
+	a := &app{out: out, errOut: errOut, requestID: *requestID, prs: deps.GitHub, issues: deps.Issues, terminal: deps.Terminal, now: deps.Now, wait: deps.Wait,
 		client: &api.Client{BaseURL: *server, Actor: *actor, HTTP: deps.HTTP}}
 	if err := a.dispatch(ctx, rest[0], rest[1:]); err != nil {
 		var status exitStatus
