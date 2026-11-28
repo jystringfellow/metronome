@@ -30,7 +30,7 @@ jobs:
         image: postgres:17
         env:
           POSTGRES_USER: metronome
-          POSTGRES_PASSWORD: metronome
+          POSTGRES_PASSWORD: ci-only-x7q2v9
           POSTGRES_DB: metronome_test
         ports:
           - 5432:5432
@@ -40,7 +40,7 @@ jobs:
           --health-timeout 5s
           --health-retries 20
     env:
-      METRONOME_TEST_POSTGRES_URL: postgres://metronome:metronome@localhost:5432/metronome_test?sslmode=disable
+      METRONOME_TEST_POSTGRES_URL: postgres://metronome:ci-only-x7q2v9@localhost:5432/metronome_test?sslmode=disable
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
