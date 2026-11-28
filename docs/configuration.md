@@ -3,6 +3,9 @@
 Declare the workstreams and their intake, publish and GitHub polling schedules in a JSON file. Start the
 service with `metronome serve --db metronome.db --config instance.json`.
 
+The database is chosen by `serve --db` or `--db-env`, not by the configuration file. For hosted PostgreSQL
+instances use `metronome serve --db-env METRONOME_DB --config instance.json` with a URL supplied securely.
+
 ```json
 {
   "version": 1,

@@ -36,6 +36,18 @@ Use one of these examples, not both. Stop and remove the container before replac
 volume. For a filesystem backup, stop the server before copying the database directory, including
 any `-wal` and `-shm` files; do not copy a live database's files independently.
 
+For hosted instances, PostgreSQL is recommended. Provide `METRONOME_DB` from your secret store (a URL
+such as `postgres://metronome@db.example.com/metronome`, with credentials supplied securely). Override the
+default command; no `/data` volume is needed for the PostgreSQL event store:
+
+```sh
+docker run -d --name metronome -p 127.0.0.1:7340:7340 \
+  -e METRONOME_DB "$IMAGE" serve --addr 0.0.0.0:7340 --db-env METRONOME_DB
+```
+
+Keep one server per database/schema and use a stop-then-start rollout. See [operations](operations.md)
+for PostgreSQL setup, migration and backups. The image still defaults to SQLite for small installations.
+
 ## Run the loops alongside the server
 
 For a fresh setup (or after stopping and removing the previous server container), use a private

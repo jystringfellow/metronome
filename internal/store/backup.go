@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 )
@@ -19,27 +20,12 @@ func Backup(ctx context.Context, src, dest string) (BackupResult, error) {
 	} else if !os.IsNotExist(err) {
 		return BackupResult{}, err
 	}
-	if _, err := os.Stat(src); os.IsNotExist(err) {
-		return BackupResult{}, fmt.Errorf("no database at %s", src)
-	} else if err != nil {
-		return BackupResult{}, err
-	}
-	db, err := sql.Open("sqlite", src)
+	source, err := openExistingSQLite(ctx, src)
 	if err != nil {
 		return BackupResult{}, err
 	}
-	defer db.Close()
-	db.SetMaxOpenConns(1)
-	if _, err := db.ExecContext(ctx, `PRAGMA busy_timeout=5000`); err != nil {
-		return BackupResult{}, err
-	}
-	var exists bool
-	if err := db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='events')`).Scan(&exists); err != nil {
-		return BackupResult{}, err
-	}
-	if !exists {
-		return BackupResult{}, fmt.Errorf("%s has no metronome event log", src)
-	}
+	defer source.Close()
+	db := source.db
 	dir := filepath.Dir(dest)
 	temp, err := os.CreateTemp(dir, "."+filepath.Base(dest)+".*.tmp")
 	if err != nil {
@@ -81,6 +67,38 @@ func Backup(ctx context.Context, src, dest string) (BackupResult, error) {
 		_ = directory.Close()
 	}
 	return result, nil
+}
+
+func openExistingSQLite(ctx context.Context, src string) (*SQLite, error) {
+	if _, err := os.Stat(src); os.IsNotExist(err) {
+		return nil, fmt.Errorf("no database at %s", src)
+	} else if err != nil {
+		return nil, err
+	}
+	path, err := filepath.Abs(src)
+	if err != nil {
+		return nil, err
+	}
+	dsn := url.URL{Scheme: "file", Path: path, RawQuery: "mode=ro"}
+	db, err := sql.Open("sqlite", dsn.String())
+	if err != nil {
+		return nil, err
+	}
+	db.SetMaxOpenConns(1)
+	if _, err := db.ExecContext(ctx, `PRAGMA busy_timeout=5000`); err != nil {
+		db.Close()
+		return nil, err
+	}
+	var exists bool
+	if err := db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='events')`).Scan(&exists); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if !exists {
+		db.Close()
+		return nil, fmt.Errorf("%s has no metronome event log", src)
+	}
+	return &SQLite{db: db}, nil
 }
 
 func verifyBackup(ctx context.Context, path string) (BackupResult, error) {
