@@ -7,6 +7,7 @@ import (
 	"slices"
 	"sort"
 	"strconv"
+	"time"
 
 	"github.com/jystringfellow/metronome/internal/flow"
 )
@@ -17,13 +18,14 @@ const (
 )
 
 type Board struct {
-	Workstreams []flow.WorkstreamView `json:"workstreams"`
-	Limits      flow.Limits           `json:"limits"`
-	Usage       flow.Usage            `json:"usage"`
-	Items       []flow.Item           `json:"items"`
-	Slices      []flow.Slice          `json:"slices"`
-	Runs        []flow.Run            `json:"runs"`
-	Flags       []flow.Flag           `json:"flags"`
+	LeaseSeconds int64                 `json:"lease_seconds"`
+	Workstreams  []flow.WorkstreamView `json:"workstreams"`
+	Limits       flow.Limits           `json:"limits"`
+	Usage        flow.Usage            `json:"usage"`
+	Items        []flow.Item           `json:"items"`
+	Slices       []flow.Slice          `json:"slices"`
+	Runs         []flow.Run            `json:"runs"`
+	Flags        []flow.Flag           `json:"flags"`
 }
 
 type BacklogRequest struct {
@@ -250,7 +252,7 @@ func (s *server) board(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	found := false
-	b := Board{Limits: s.eng.Config().Limits, Items: []flow.Item{}, Slices: []flow.Slice{}, Runs: []flow.Run{}, Flags: []flow.Flag{}}
+	b := Board{LeaseSeconds: int64(s.eng.Config().Lease / time.Second), Limits: s.eng.Config().Limits, Items: []flow.Item{}, Slices: []flow.Slice{}, Runs: []flow.Run{}, Flags: []flow.Flag{}}
 	s.eng.View(func(st *flow.State) {
 		if ws != "" && st.Workstreams[ws] == nil {
 			return

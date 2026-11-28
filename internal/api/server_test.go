@@ -211,7 +211,7 @@ func TestBoardAssets(t *testing.T) {
 		}
 	}
 	html := assets["/"]
-	for _, text := range []string{"<title>Metronome</title>", "/board.js", "/board.css", "Limits", "Items", "Slices", "Open runs", "Open asks", "Latest events"} {
+	for _, text := range []string{"<title>Metronome</title>", "/board.js", "/board.css", "Workstreams", "Labels", "Needs attention", "Recent activity"} {
 		if !strings.Contains(html, text) {
 			t.Errorf("page missing %q", text)
 		}
@@ -229,11 +229,16 @@ func TestBoardAssets(t *testing.T) {
 			t.Errorf("CSS contains %q", text)
 		}
 	}
+	for _, text := range []string{"prefers-color-scheme: dark", "prefers-reduced-motion", ":focus-visible", "max-width"} {
+		if !strings.Contains(assets["/board.css"], text) {
+			t.Errorf("CSS missing %q", text)
+		}
+	}
 	script := assets["/board.js"]
 	if !strings.Contains(script, "item.labels") {
 		t.Error("board script missing item labels")
 	}
-	for _, text := range []string{"innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval(", "new Function", "method:", "POST", "XMLHttpRequest", "WebSocket"} {
+	for _, text := range []string{"innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval(", "new Function", "method:", "POST", "XMLHttpRequest", "WebSocket", "setAttribute('style'", `setAttribute("style"`, ".style."} {
 		if strings.Contains(script, text) {
 			t.Errorf("script contains %q", text)
 		}
@@ -241,7 +246,7 @@ func TestBoardAssets(t *testing.T) {
 	if strings.Contains(strings.ReplaceAll(script, "https://github.com/", ""), "://") {
 		t.Error("script contains an unexpected absolute URL")
 	}
-	for _, path := range []string{"/v1/board", "/v1/events"} {
+	for _, path := range []string{"/v1/board", "/v1/events", "pushState", "popstate", "URLSearchParams", "lease_seconds"} {
 		if !strings.Contains(script, path) {
 			t.Errorf("script missing %s", path)
 		}
@@ -349,6 +354,9 @@ func TestBoardData(t *testing.T) {
 	if board.Limits != flow.DefaultConfig().Limits || board.Usage.Execute != 1 || board.Usage.Review != 1 || board.Usage.PerApprover == nil {
 		t.Fatalf("unexpected limits or usage: %s", body)
 	}
+	if board.LeaseSeconds != int64(flow.DefaultConfig().Lease/time.Second) {
+		t.Fatalf("unexpected lease seconds: %d", board.LeaseSeconds)
+	}
 	if !reflect.DeepEqual(board.Items[0].Labels, []string{"business", "slow"}) {
 		t.Fatal(board.Items[0].Labels)
 	}
@@ -364,7 +372,7 @@ func TestBoardData(t *testing.T) {
 	if err := json.Unmarshal(body, &filtered); err != nil || resp.StatusCode != 200 ||
 		!reflect.DeepEqual(filtered.Items, []flow.Item{}) || !reflect.DeepEqual(filtered.Slices, []flow.Slice{}) ||
 		!reflect.DeepEqual(filtered.Runs, []flow.Run{}) || !reflect.DeepEqual(filtered.Flags, []flow.Flag{}) ||
-		!reflect.DeepEqual(board.Usage, filtered.Usage) || !reflect.DeepEqual(board.Workstreams, filtered.Workstreams) || board.Limits != filtered.Limits {
+		!reflect.DeepEqual(board.Usage, filtered.Usage) || !reflect.DeepEqual(board.Workstreams, filtered.Workstreams) || board.Limits != filtered.Limits || board.LeaseSeconds != filtered.LeaseSeconds {
 		t.Fatalf("nonmatching label: %d %s: %v", resp.StatusCode, body, err)
 	}
 	for _, query := range []string{"label=a,b", "label="} {
@@ -372,6 +380,45 @@ func TestBoardData(t *testing.T) {
 		if resp.StatusCode != 400 || !strings.Contains(string(body), `"code":"invalid"`) {
 			t.Fatalf("invalid label: %d %s", resp.StatusCode, body)
 		}
+	}
+	run("pat", "workstream", "create", "example", "--execute", "2")
+	if err := os.WriteFile(backlog, []byte(`{"items":[{"ref":"ACME-2","title":"Import reports","owner":"pat"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	run("pat", "backlog", "sync", "--workstream", "example", backlog)
+	resp, body = request(t, server, http.MethodGet, "/v1/board")
+	var grouped api.Board
+	if err := json.Unmarshal(body, &grouped); err != nil || resp.StatusCode != 200 || len(grouped.Workstreams) != 2 || len(grouped.Items) != 2 {
+		t.Fatalf("grouped board: %d %s: %v", resp.StatusCode, body, err)
+	}
+	defaultView, exampleView := grouped.Workstreams[0], grouped.Workstreams[1]
+	if defaultView.Name != "default" || defaultView.Limits.Execute != 5 || defaultView.Usage.Execute != 1 || exampleView.Name != "example" || exampleView.Limits.Execute != 2 || exampleView.Usage.Execute != 0 || exampleView.Usage.Ready != 1 {
+		t.Fatalf("unexpected workstreams: %+v", grouped.Workstreams)
+	}
+	items, sliceStreams := map[string]string{}, map[string]string{}
+	for _, item := range grouped.Items {
+		items[item.ID] = item.Workstream
+	}
+	for _, slice := range grouped.Slices {
+		sliceStreams[slice.ID] = slice.Workstream
+		if slice.Workstream == "" || items[slice.ItemID] != slice.Workstream {
+			t.Fatalf("slice without matching item workstream: %+v", slice)
+		}
+	}
+	for _, activeRun := range grouped.Runs {
+		if sliceStreams[activeRun.SliceID] == "" {
+			t.Fatalf("run without slice workstream: %+v", activeRun)
+		}
+	}
+	for _, flag := range grouped.Flags {
+		if flag.Subject.Kind == flow.SubjectItem && items[flag.Subject.ID] == "" || flag.Subject.Kind == flow.SubjectSlice && sliceStreams[flag.Subject.ID] == "" {
+			t.Fatalf("flag without subject workstream: %+v", flag)
+		}
+	}
+	resp, body = request(t, server, http.MethodGet, "/v1/board?workstream=example")
+	var example api.Board
+	if err := json.Unmarshal(body, &example); err != nil || resp.StatusCode != 200 || example.LeaseSeconds != board.LeaseSeconds || !reflect.DeepEqual(example.Workstreams, []flow.WorkstreamView{exampleView}) || len(example.Items) != 1 || example.Items[0].Workstream != "example" || len(example.Runs) != 0 || len(example.Flags) != 0 {
+		t.Fatalf("scoped board: %d %s: %v", resp.StatusCode, body, err)
 	}
 	readEvents := func(path string) []flow.Event {
 		t.Helper()

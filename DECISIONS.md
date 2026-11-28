@@ -58,6 +58,22 @@ open.
   - Link PRs only for validated `OWNER/NAME` repositories and positive PR numbers, so other repository
     identifiers remain plain text rather than misleading links.
 
+## Agent decision (2026-11-28): board page with workstreams first-class
+
+- Read the unfiltered board and scope items, slices, runs and asks in the page, mirroring the server's
+  label filter without filtering capacity. Keep one label at a time because multiple-label OR is Open.
+  Switch scope with address links and `pushState`, without reloading; browser history restores scope.
+- Add `lease_seconds` to the board contract. Mark leases expiring within the greater of 60 seconds and
+  20% of the configured lease, and distinguish expired open runs from stalled slices.
+- Put all workstreams' live lanes before any backlog in All view, then group the backlog by workstream.
+  In a single-workstream view, keep the backlog inside its lane after live work. Show five Ready rows per
+  workstream with the remainder and shelved items in collapsed details. Keep global per-approver usage
+  separate from workstream capacity.
+- Buffer the latest 300 events and show up to 30 matching sentences; explicitly count recent events that
+  could not be placed in the filtered view. Highlight new or changed entities and events until the next
+  successful refresh; preserve keyboard focus and expanded details across refreshes.
+- Keep links and details as the only controls, and keep the original read-only CSP and embedded assets.
+
 ## Decided (2026-11-27): runner instructions
 
 - [docs/runners.md](docs/runners.md) is the guide for agents taking work from Metronome and people wiring
@@ -350,6 +366,8 @@ Recorded so the data model leaves room for it. Nothing here is in the proof of c
   conflict naming what it waits on; `no_work` may list waiting slices. Show `waits_on` on the web board.
   Link `docs/backlog.md` from `docs/runners.md` and list it beside the brief and the run environment as an
   additive-only contract.
+
+- Agent update (2026-11-28): the web board is now grouped by workstream and shows `waits_on`.
 
 ## Decided by the maintainer (2026-11-27): pre-planned slices in the backlog
 
