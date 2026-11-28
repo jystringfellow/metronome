@@ -1,7 +1,9 @@
 package ado
 
 import (
+	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -69,5 +71,20 @@ func TestBacklogErrors(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatal(err)
 		}
+	}
+}
+
+func TestBacklogNormalisesTagsIntoLabels(t *testing.T) {
+	tags := []string{"tier:1", "Shared  Library", "shared library", "C#", "metronome"}
+	for i := 0; i < 30; i++ {
+		tags = append(tags, fmt.Sprintf("tag %02d", i))
+	}
+	result, err := Backlog([]WorkItem{{ID: 7, Title: "Adopt", State: "New", Tags: tags, Description: "<p>Repo: acme/app</p>"}}, "pat", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	labels := result.Items[0].Labels
+	if len(labels) != 20 || labels[0] != "shared library" || labels[1] != "metronome" || slices.Contains(labels, "c#") {
+		t.Fatalf("labels = %q", labels)
 	}
 }

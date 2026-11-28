@@ -55,8 +55,8 @@ type Item struct {
 	Ref           string      `json:"ref"`
 	Title         string      `json:"title"`
 	Intent        string      `json:"intent"`
+	Labels        []string    `json:"labels"`
 	Owner         string      `json:"owner"`
-	Labels        []string    `json:"labels,omitempty"`
 	Value         float64     `json:"value"`
 	PredictedTier int         `json:"predicted_tier"`
 	TierDefaulted bool        `json:"tier_defaulted,omitempty"`
@@ -229,11 +229,12 @@ type Flag struct {
 }
 
 type State struct {
-	Workstreams map[string]*Workstream `json:"workstreams"`
-	Items       map[string]*Item       `json:"items"`
-	Slices      map[string]*Slice      `json:"slices"`
-	Runs        map[string]*Run        `json:"runs"`
-	Flags       map[string]*Flag       `json:"flags"`
+	Publishers  map[string]PublisherCursor `json:"-"`
+	Workstreams map[string]*Workstream     `json:"workstreams"`
+	Items       map[string]*Item           `json:"items"`
+	Slices      map[string]*Slice          `json:"slices"`
+	Runs        map[string]*Run            `json:"runs"`
+	Flags       map[string]*Flag           `json:"flags"`
 
 	seen    map[string]struct{}
 	lastSeq int64
@@ -242,6 +243,7 @@ type State struct {
 
 func NewState() *State {
 	return &State{
+		Publishers:  map[string]PublisherCursor{},
 		Workstreams: map[string]*Workstream{DefaultWorkstream: {Name: DefaultWorkstream, Limits: DefaultConfig().Limits.Stages()}},
 		Items:       map[string]*Item{},
 		Slices:      map[string]*Slice{},

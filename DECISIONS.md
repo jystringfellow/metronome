@@ -3,6 +3,22 @@
 This file records what has been decided about Metronome, what the review of SPEC.md found, and what is still
 open.
 
+## Decided (2026-11-27): backlog item labels
+
+- Agent's decisions: accept optional source labels, trimming and collapsing whitespace, lowercasing,
+  de-duplicating and sorting before comparison. Allow at most 20 distinct labels, each 1 to 40
+  characters, starting with an ASCII letter or digit and containing only `a-z`, `0-9`, space and
+  `. _ - : /`. Exclude commas to keep the text board unambiguous. Refuse invalid sources rather than
+  dropping labels.
+- Keep sync add-only. Intake updates labels only on Ready items and on restoration, with full replacement
+  in `item_updated` and `item_restored`; absent labels mean none. Existing payloads replay without migration.
+- Filter the board server-side with the normalised `label` query (CLI `board --label`), keeping matching
+  items, their slices, open runs and open asks. Capacity is unchanged. The read-only page shows labels.
+- Always include `item.labels` in JSON briefs, using `[]` when empty.
+- Agent's testing decision (2026-11-27): test the served page and automatic label refresh only when
+  `METRONOME_BROWSER` explicitly names a Chromium executable. CI skips this test by default; a skip does
+  not verify rendering.
+
 ## Decided (2026-11-27): what the brief tells a resuming runner
 
 - Maintainer's decision: add rework status and reason, the previous branch and PR, and answered asks to the
@@ -89,8 +105,9 @@ open.
 
 - `metronome next` prints the claim, slice and item. With `--json`, it prints one object with these sections:
   `claim` (`workstream`, `run_id`, `slice_id`, `lease_until`; `workstream` added 2026-11-27), `slice` (`id`, `repo`, `title`, `criteria`, `approvers`),
-  and `item` (`id`, `ref`, `title`, `intent`). Every field is always present; empty criteria and approvers are
-  arrays, absent intent is an empty string, and the lease is an RFC 3339 timestamp in UTC. Changes to this
+  and `item` (`id`, `ref`, `title`, `intent`, `labels`; `labels` added 2026-11-27). Every field is always
+  present; empty criteria, approvers and labels are arrays, absent intent is an empty string, and the
+  lease is an RFC 3339 timestamp in UTC. Changes to this
   contract are additive only. `metronome run` will hand this same object to its command.
 - The CLI reads `GET /v1/board` after claiming. No new endpoint is needed because the slice and item brief
   fields are fixed once written. If the read fails or the slice or item is missing, the CLI reports the run
@@ -343,8 +360,9 @@ Recorded so the data model leaves room for it. Nothing here is in the proof of c
 - The source owns the backlog. `metronome intake --workstream NAME [--every D] -- CMD` reads backlog JSON
   from CMD's stdout, once or periodically, without holding source credentials. Stderr passes through;
   a failed command or invalid result syncs nothing, reports the error and does not stop a periodic loop.
-- Intake mirrors the source: add within Ready limits, rerank and update Ready titles and intent, and remove
-  missing items from Ready. Work in Plan or later is never automatically dropped; report a disappearance.
+- Intake mirrors the source: add within Ready limits, rerank and update Ready titles, intent and labels
+  (labels added 2026-11-27), and remove missing items from Ready. Work in Plan or later is never automatically
+  dropped; report a disappearance.
   Report and skip claims held by other instances, local or hosted. Repeating the same sync is idempotent.
 
 ## Agent decision (2026-11-27): implementing intake
@@ -356,8 +374,9 @@ Recorded so the data model leaves room for it. Nothing here is in the proof of c
 - Shelve before refill so newly freed room is usable immediately. Add and restore in source order under
   the existing refill threshold and Ready limit. Never evict an existing Ready item merely to make room
   for a higher-ranked new one; retain front priority for parked items.
-- Update only rank, title and intent on Ready items, including on restoration. Report changes to owner,
-  value, tier or slices instead of deciding the open question about changing those fields.
+- Update only rank, title, intent and labels on Ready items, including on restoration (labels added
+  2026-11-27). Report changes to owner, value, tier or slices instead of deciding the open question about
+  changing those fields.
 - A foreign claim shelves a Ready item and prevents adding or restoring it. A foreign claim or disappearance
   in Plan or later produces a note, leaving authored work intact. Done and dropped items need no note.
   Report cross-workstream refs rather than moving them. Add-only `backlog sync` also skips foreign claims.
@@ -409,16 +428,64 @@ Recorded so the data model leaves room for it. Nothing here is in the proof of c
 
 ## Open (2026-11-27): GitHub Issues intake follow-up
 
-- Should an assignee or label mark an external claim when multiple instances share a repository?
+- Resolved below: an instance-specific label marks external claims; an assignee alone does not.
 - Should approvers or multiple slices (such as sub-issues) come from the issue?
 - Should value come from a project field?
 - Should the label filter support multiple labels (OR)?
 
+## Decided by the maintainer (2026-11-27): publish mirrors intake
+
+Metronome hands workstream transitions to the source's own command, which updates the source's workflow.
+This refines the November 26 decision that mirroring status back is the team's own skill or plugin: the
+core still never writes to a source or holds its credentials. The GitHub publisher is one such command.
+
+## Agent decision (2026-11-27): implementing publish
+
+- Derive flat transition names from status differences while applying events, with separate ask transitions.
+  Existing events keep their meaning; live and replayed transitions use the same derivation.
+- A new `publisher_advanced` event stores a sequence cursor per workstream and publisher. Advance uses
+  compare-and-set; batches have a bound but never split one event. Rounds drain batches and skip empty runs.
+- Keep opaque publisher JSON beside the cursor, limited to 256 KiB. Save changed valid state even on command
+  failure, without advancing its cursor. This lets the GitHub publisher preserve last-written Status across
+  machines and partially failed batches without a new field, a hidden comment before a PR, or an unreliable
+  inference from the GitHub user (who can also edit the board) or the current mapping.
+- Claims use `metronome:claimed:INSTANCE` labels; each instance uses the same name on intake and publish.
+  Assign on claim and remove only assignments the publisher made. One hidden PR marker per distinct PR
+  prevents duplicate comments. Keep a completed-transition watermark with keys at its last sequence so
+  terminal state can be pruned without replaying completed claim and Status writes after partial failure.
+- Default mapping: planning and ready → Ready; claimed, submitted, pr_open and rework → In progress;
+  in_review and approved → In review; done → Done. Latest mapped transition wins for multi-slice items.
+  Adopt an already matching Status on first observation; otherwise only change a value matching the last-written
+  value. Do not adopt a later human edit even if it matches a mapped target: doing so would give subsequent
+  transitions permission to overwrite the edit. Report unresolved or ambiguous body references and skip;
+  fail on configuration and gh errors.
+- Review follow-up (2026-11-27): save changed publisher state after an interrupted command using a separate,
+  five-second commit context. Only successful commands advance the cursor. Parking a slice already in rework
+  publishes `parked`, not another `rework` transition. Keep publisher state out of the generic State JSON.
+
+## Open (2026-11-27): publish follow-up
+
+- How should a publisher recover if it changed an issue but Metronome was killed before committing its state,
+  or the advance POST failed (service unavailable or five-second timeout)? On replay, the publisher can mistake
+  its own Status for a human edit and stop updating it, or leave its assignee on the issue after completion.
+  Should a person reconcile the issue, or should replay adopt a Status matching the transition's target?
+- The race before a claim marker appears remains open. Concurrent publishers or a person editing during
+  a GitHub write are not protected by a source-side atomic compare-and-set.
+- Should a new publisher be able to start at the current end of the log?
+- How should Status aggregate for multi-slice items?
+- Should publish commands have a timeout, and should publisher state expire? Each state-saving cursor event
+  stores the complete opaque state, so the log can grow by up to 256 KiB per such event.
+- How should a publisher recover from a permanently inaccessible direct issue ref (deleted or transferred)?
+  For now a failed direct issue read retries the round: a missing issue and insufficient permissions are not
+  always distinguishable, and incomplete reads must not be acknowledged as success.
+- On merge, link the publish contract from `docs/runners.md` and list it with the other additive-only contracts.
+
 ## Agent decision (2026-11-27): implementing Azure DevOps intake
 
-- Add optional `labels` to the backlog contract and item-added event, persisted in board data. Changes
-  to existing Ready or restored items are reported rather than applied; absent labels replay unchanged.
-  GitHub intake still emits no labels.
+- Map work item tags, other than `tier:N`, to the item's labels (added to the backlog contract on
+  2026-11-27). Each tag is normalised with Metronome's label rule; a tag the rule refuses is skipped rather
+  than failing the whole read, and at most 20 labels are kept, in tag order. (Merged with main by the
+  maintainer's reviewer on 2026-11-27, replacing this branch's own labels field.)
 - Parse Predecessor links and retain their reference mapping in the adapter. Report links inside and
   outside the result, except finished predecessors. The brief's dependency criterion is only partly met:
   cross-item dependencies remain open (#46), and `after` cannot express these links.
@@ -623,6 +690,8 @@ Choices made while building step 1 where SPEC.md was silent. Each is easy to cha
 
 Everything section 12 of SPEC.md marks Open or Unverified, plus:
 
+- 2026-11-27: agent's open questions: whether labels should update on items in Plan or later, and whether
+  to allow non-ASCII labels.
 - 2026-11-27: what happens when an approver reports an effective tier of 2 or more on a tier 0 or 1 item.
   Effective tiers are not recorded yet, so only the confirmed tier decides today.
 - 2026-11-27: whether plan approval should stop overwriting the predicted tier, which SPEC.md section 6 keeps

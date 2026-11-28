@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 	"sort"
 	"strconv"
 
@@ -33,6 +34,14 @@ type BacklogRequest struct {
 type IntakeRequest struct {
 	Workstream string              `json:"workstream"`
 	Items      *[]flow.BacklogItem `json:"items"`
+}
+
+type PublishBatch = flow.PublishBatch
+
+type PublisherAdvanceRequest struct {
+	After int64           `json:"after"`
+	Seq   int64           `json:"seq"`
+	State json.RawMessage `json:"state,omitempty"`
 }
 
 type PlanStartRequest struct {
@@ -102,6 +111,26 @@ func Handler(eng *flow.Engine) http.Handler {
 	mux.HandleFunc("GET /v1/workstreams", func(w http.ResponseWriter, r *http.Request) {
 		eng.View(func(st *flow.State) { writeJSON(w, http.StatusOK, st.WorkstreamViews()) })
 	})
+	mux.HandleFunc("GET /v1/workstreams/{name}/publishers/{publisher}/batch", func(w http.ResponseWriter, r *http.Request) {
+		limit := 100
+		if value := r.URL.Query().Get("limit"); value != "" {
+			parsed, err := strconv.Atoi(value)
+			if err != nil {
+				writeError(w, &flow.Error{Code: flow.CodeInvalid, Message: "invalid batch limit"})
+				return
+			}
+			limit = max(1, min(1000, parsed))
+		}
+		batch, err := eng.PublisherBatch(r.PathValue("name"), r.PathValue("publisher"), limit)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, batch)
+	})
+	mux.HandleFunc("POST /v1/workstreams/{name}/publishers/{publisher}/advance", command(func(r *http.Request, c call, req PublisherAdvanceRequest) (flow.Result, error) {
+		return eng.AdvancePublisher(r.Context(), c.actor, r.PathValue("name"), r.PathValue("publisher"), req.After, req.Seq, req.State)
+	}))
 	mux.HandleFunc("POST /v1/workstreams", command(func(r *http.Request, c call, req WorkstreamCreateRequest) (flow.Result, error) {
 		return eng.CreateWorkstream(r.Context(), c.actor, c.requestID, req.Name, req.PartialLimits)
 	}))
@@ -210,6 +239,15 @@ func command[T any](fn func(r *http.Request, c call, req T) (flow.Result, error)
 
 func (s *server) board(w http.ResponseWriter, r *http.Request) {
 	ws := r.URL.Query().Get("workstream")
+	var label string
+	if r.URL.Query().Has("label") {
+		var err error
+		label, err = flow.NormaliseLabel(r.URL.Query().Get("label"))
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+	}
 	found := false
 	b := Board{Limits: s.eng.Config().Limits, Items: []flow.Item{}, Slices: []flow.Slice{}, Runs: []flow.Run{}, Flags: []flow.Flag{}}
 	s.eng.View(func(st *flow.State) {
@@ -223,20 +261,23 @@ func (s *server) board(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		b.Usage = st.Usage()
+		keptItems, keptSlices := map[string]bool{}, map[string]bool{}
 		for _, it := range st.Items {
-			if ws != "" && it.Workstream != ws {
+			if (ws != "" && it.Workstream != ws) || (label != "" && !slices.Contains(it.Labels, label)) {
 				continue
 			}
+			keptItems[it.ID] = true
 			b.Items = append(b.Items, *it)
 		}
 		for _, sl := range st.Slices {
-			if ws != "" && sl.Workstream != ws {
+			if !keptItems[sl.ItemID] {
 				continue
 			}
+			keptSlices[sl.ID] = true
 			b.Slices = append(b.Slices, *sl)
 		}
 		for _, r := range st.Runs {
-			if ws != "" && st.Slices[r.SliceID].Workstream != ws {
+			if !keptSlices[r.SliceID] {
 				continue
 			}
 			if !r.Closed {
@@ -244,13 +285,11 @@ func (s *server) board(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		for _, f := range st.Flags {
-			if ws != "" {
-				if f.Subject.Kind == flow.SubjectItem && st.Items[f.Subject.ID].Workstream != ws {
-					continue
-				}
-				if f.Subject.Kind == flow.SubjectSlice && st.Slices[f.Subject.ID].Workstream != ws {
-					continue
-				}
+			if f.Subject.Kind == flow.SubjectItem && !keptItems[f.Subject.ID] {
+				continue
+			}
+			if f.Subject.Kind == flow.SubjectSlice && !keptSlices[f.Subject.ID] {
+				continue
 			}
 			if !f.Closed {
 				b.Flags = append(b.Flags, *f)

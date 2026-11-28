@@ -61,8 +61,8 @@ type itemAdded struct {
 	Ref           string      `json:"ref"`
 	Title         string      `json:"title"`
 	Intent        string      `json:"intent"`
-	Owner         string      `json:"owner"`
 	Labels        []string    `json:"labels,omitempty"`
+	Owner         string      `json:"owner"`
 	Value         float64     `json:"value"`
 	PredictedTier int         `json:"predicted_tier"`
 	Rank          int         `json:"rank"`
@@ -75,10 +75,11 @@ type itemRef struct {
 }
 
 type itemUpdated struct {
-	ItemID string `json:"item_id"`
-	Rank   int    `json:"rank"`
-	Title  string `json:"title"`
-	Intent string `json:"intent"`
+	ItemID string   `json:"item_id"`
+	Rank   int      `json:"rank"`
+	Title  string   `json:"title"`
+	Intent string   `json:"intent"`
+	Labels []string `json:"labels,omitempty"`
 }
 
 type itemShelved struct {
@@ -192,6 +193,18 @@ func (s *State) Apply(e Event) error {
 
 func (s *State) apply(e Event) error {
 	switch e.Type {
+	case EvPublisherAdvanced:
+		var p publisherAdvanced
+		if err := json.Unmarshal(e.Data, &p); err != nil {
+			return err
+		}
+		key := p.Workstream + "/" + p.Publisher
+		cursor := s.Publishers[key]
+		cursor.Seq = p.Seq
+		if p.State != nil {
+			cursor.State = p.State
+		}
+		s.Publishers[key] = cursor
 	case EvWorkstreamCreated, EvWorkstreamLimitsSet:
 		var p workstreamLimits
 		if err := json.Unmarshal(e.Data, &p); err != nil {
@@ -223,8 +236,9 @@ func (s *State) apply(e Event) error {
 		s.Items[p.ItemID] = &Item{
 			Workstream: p.Workstream,
 			ID:         p.ItemID, Ref: p.Ref, Title: p.Title, Intent: p.Intent, Owner: p.Owner,
-			Value: p.Value, PredictedTier: p.PredictedTier, Rank: p.Rank,
-			PlannedSlices: p.Slices, TierDefaulted: p.TierDefaulted, Labels: p.Labels,
+			Labels: append([]string{}, p.Labels...),
+			Value:  p.Value, PredictedTier: p.PredictedTier, Rank: p.Rank,
+			PlannedSlices: p.Slices, TierDefaulted: p.TierDefaulted,
 			Status: ItemReady, AddedAt: e.At, Slices: []string{},
 		}
 	case EvItemUpdated, EvItemRestored:
@@ -244,6 +258,7 @@ func (s *State) apply(e Event) error {
 			return fail(CodeConflict, "item %s is %s, not %s", it.ID, it.Status, want)
 		}
 		it.Rank, it.Title, it.Intent = p.Rank, p.Title, p.Intent
+		it.Labels = append([]string{}, p.Labels...)
 		it.Status, it.ShelvedReason, it.ClaimedBy = ItemReady, "", ""
 	case EvItemShelved:
 		var p itemShelved

@@ -48,27 +48,6 @@ func TestIntakeAddsNewItemsWithinReadyLimits(t *testing.T) {
 	wantEventTypes(t, h.ok(h.eng.IntakeBacklog(ctx(), "pat", "", "example", sourceItems(1, 2, 3, 4, 5))))
 }
 
-func TestIntakeLabels(t *testing.T) {
-	h := newHarness(t, nil)
-	items := sourceItems(1, 2)
-	items[0].Labels = []string{"export", "ready"}
-	h.intake(items...)
-	h.eng = h.reload()
-	if !reflect.DeepEqual(h.item("I1").Labels, items[0].Labels) || h.item("I2").Labels != nil {
-		t.Fatal(h.item("I1"), h.item("I2"))
-	}
-	items[0].Labels = []string{"new"}
-	result := h.intake(items...)
-	wantEventTypes(t, result)
-	wantNote(t, result, "labels or slices")
-	if !reflect.DeepEqual(h.item("I1").Labels, []string{"export", "ready"}) {
-		t.Fatal(h.item("I1"))
-	}
-	items[0].Labels = []string{" "}
-	_, err := h.eng.IntakeBacklog(ctx(), "pat", "", "default", items)
-	wantCode(t, err, flow.CodeInvalid)
-}
-
 func TestIntakeReranksAndUpdatesReadyItems(t *testing.T) {
 	h := newHarness(t, nil)
 	h.intake(sourceItems(1, 2, 3)...)
@@ -77,7 +56,7 @@ func TestIntakeReranksAndUpdatesReadyItems(t *testing.T) {
 	items[2].Owner = "example"
 	result := h.intake(items...)
 	wantEventTypes(t, result, flow.EvItemUpdated, flow.EvItemUpdated)
-	wantNote(t, result, "intake updates only rank, title and intent")
+	wantNote(t, result, "intake updates only rank, title, intent and labels")
 	if it := h.item("I1"); it.Rank != 2 || it.Intent != "new intent" {
 		t.Fatal(it)
 	}
@@ -160,10 +139,16 @@ func TestIntakeRespectsClaimsInTheSource(t *testing.T) {
 
 func TestIntakeIsIdempotentAndReplays(t *testing.T) {
 	h := newHarness(t, nil)
-	h.intake(sourceItems(1, 2, 3)...)
+	initial := sourceItems(1, 2, 3)
+	initial[0].Labels = []string{"old"}
+	initial[2].Labels = []string{"shelved"}
+	h.intake(initial...)
 	h.intake(sourceItems(1, 2)...)
 	items := sourceItems(3, 1, 4)
 	items[1].Intent = "updated"
+	items[0].Labels = []string{"Report", "slow"}
+	items[1].Labels = []string{"business"}
+	items[2].Labels = []string{"new"}
 	wantEventTypes(t, h.intake(items...), flow.EvItemUpdated, flow.EvItemShelved, flow.EvItemRestored, flow.EvItemAdded)
 	before := h.eng.EventsAfter(0, 0)
 	wantEventTypes(t, h.intake(items...))

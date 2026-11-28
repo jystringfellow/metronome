@@ -22,11 +22,15 @@ func TestIntakeSyncsFromACommand(t *testing.T) {
 	e := newEnv(t)
 	e.ok("pat", "workstream", "create", "example")
 	items := []flow.BacklogItem{{Ref: "ACME-1", Title: "first", Owner: "pat"}, {Ref: "ACME-2", Title: "second", Owner: "pat"}, {Ref: "ACME-3", Title: "third", Owner: "pat"}}
+	items[0].Labels = []string{" Slow ", "business"}
 	source := e.file("source.json", api.BacklogRequest{Items: items})
 	copyPath := filepath.Join(e.dir, "snapshot.json")
 	args := []string{"intake", "--workstream", "example", "--", "sh", "-c", `echo reading >&2; test "$METRONOME_WORKSTREAM" = example && cp "$METRONOME_ITEMS" "$1" && cat "$2"`, "sh", copyPath, source}
 	if out := e.ok("pat", args...); !strings.Contains(out, "reading") || strings.Count(out, "item_added") != 3 {
 		t.Fatal(out)
+	}
+	if labels := e.board().Items[0].Labels; strings.Join(labels, ",") != "business,slow" {
+		t.Fatal(labels)
 	}
 	data, err := os.ReadFile(copyPath)
 	if err != nil || !strings.Contains(string(data), `"workstream":"example"`) {

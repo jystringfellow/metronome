@@ -312,7 +312,7 @@ func TestNextPrintsTheSliceBrief(t *testing.T) {
 			t.Errorf("next missing %q:\n%s", want, out)
 		}
 	}
-	for _, label := range []string{"rework:", "previous:", "asks:"} {
+	for _, label := range []string{"rework:", "previous:", "asks:", "labels:"} {
 		if strings.Contains(out, label) {
 			t.Fatalf("fresh claim contains %q:\n%s", label, out)
 		}
@@ -360,10 +360,10 @@ func TestNextJSONPrintsTheBrief(t *testing.T) {
 	want := map[string]map[string]any{
 		"claim":   {"workstream": "default", "run_id": "R1", "slice_id": "I1.1", "lease_until": lease},
 		"slice":   {"id": "I1.1", "repo": "acme/app", "title": "API endpoint", "criteria": []any{"GET /export returns CSV", "An empty account exports a header row\nNo data rows"}, "approvers": []any{"rev", "sam"}},
-		"item":    {"id": "I1", "ref": "ACME-1", "title": "Add export", "intent": "Let customers download their data\nInclude all records"},
+		"item":    {"id": "I1", "ref": "ACME-1", "title": "Add export", "intent": "Let customers download their data\nInclude all records", "labels": []any{}},
 		"history": emptyHistory(),
 	}
-	if !reflect.DeepEqual(brief, want) || !strings.Contains(out, `"asks": []`) || !strings.Contains(out, `"pr": null`) {
+	if !reflect.DeepEqual(brief, want) || !strings.Contains(out, `"asks": []`) || !strings.Contains(out, `"pr": null`) || !strings.Contains(out, `"labels": []`) {
 		t.Fatalf("brief = %#v, want %#v", brief, want)
 	}
 	out = e.ok("laptop", "next", "--runner", "laptop", "--slice", "I1.2", "--json")
@@ -372,6 +372,64 @@ func TestNextJSONPrintsTheBrief(t *testing.T) {
 	want["slice"] = map[string]any{"id": "I1.2", "repo": "acme/docs", "title": "Docs", "criteria": []any{}, "approvers": []any{}}
 	if !reflect.DeepEqual(brief, want) || !strings.Contains(out, `"approvers": []`) {
 		t.Fatalf("second brief = %s, want %#v", out, want)
+	}
+}
+
+func TestBoardLabels(t *testing.T) {
+	e := newEnv(t)
+	items := []flow.BacklogItem{
+		{Ref: "ACME-1", Title: "Labelled item", Owner: "pat", Labels: []string{"B", " A ", "capability gap"}, Slices: []flow.SliceSpec{{Title: "Labelled slice", Repo: "acme/app"}, {Title: "Labelled docs", Repo: "acme/app"}}},
+		{Ref: "ACME-2", Title: "Other item", Owner: "pat", Labels: []string{"report"}, Slices: []flow.SliceSpec{{Title: "Other slice", Repo: "acme/app"}, {Title: "Other docs", Repo: "acme/app"}}},
+		{Ref: "ACME-3", Title: "Unlabelled item", Owner: "pat"},
+	}
+	e.ok("pat", "backlog", "sync", e.file("backlog.json", api.BacklogRequest{Items: items}))
+	for _, id := range []string{"I1", "I2"} {
+		e.ok("pat", "plan", "start", id)
+		e.ok("pat", "plan", "approve", id)
+		e.ok("pat", "ask", "--item", id, "--type", "answer", "--question", "Item question for "+id)
+		e.ok("pat", "ask", "--slice", id+".2", "--type", "answer", "--question", "Slice question for "+id)
+		e.ok("laptop", "next", "--runner", "laptop", "--slice", id+".1")
+	}
+	text := e.ok("pat", "board")
+	if !strings.Contains(text, "LABELS") || !strings.Contains(text, "a, b, capability gap") || !strings.Contains(text, "Unlabelled item") {
+		t.Fatal(text)
+	}
+	for _, line := range strings.Split(text, "\n") {
+		if strings.Contains(line, "Unlabelled item") && !strings.Contains(line, "- ") {
+			t.Fatal(line)
+		}
+	}
+	var board api.Board
+	out := e.ok("pat", "board", "--label", " Capability   GAP ", "--json")
+	if err := json.Unmarshal([]byte(out), &board); err != nil || len(board.Items) != 1 || board.Items[0].ID != "I1" || len(board.Slices) != 2 || board.Slices[0].ID != "I1.1" || board.Slices[1].ID != "I1.2" {
+		t.Fatal(out, err)
+	}
+	if len(board.Runs) != 1 || board.Runs[0].SliceID != "I1.1" || len(board.Flags) != 2 || board.Flags[0].Subject.ID != "I1" || board.Flags[1].Subject.ID != "I1.2" {
+		t.Fatal(out)
+	}
+	if full := e.board(); !reflect.DeepEqual(full.Usage, board.Usage) || !reflect.DeepEqual(full.Workstreams, board.Workstreams) || full.Limits != board.Limits {
+		t.Fatal("filter changed capacity", out)
+	}
+	text = e.ok("pat", "board", "--label", "a")
+	if !strings.Contains(text, "Labelled item") || !strings.Contains(text, "Labelled slice") || strings.Contains(text, "Other item") || strings.Contains(text, "Other slice") || strings.Contains(text, "Unlabelled item") {
+		t.Fatal(text)
+	}
+	if out, code := e.run("pat", "board", "--label", "a,b"); code != 1 || !strings.Contains(out, "invalid") {
+		t.Fatal(out, code)
+	}
+}
+
+func TestNextIncludesLabels(t *testing.T) {
+	e := newEnv(t)
+	e.approvedItem(flow.BacklogItem{Ref: "ACME-1", Title: "Labelled item", Owner: "pat", Labels: []string{"Slow", "business", "slow"}}, []flow.SliceSpec{{Title: "example", Repo: "acme/app"}})
+	args := []string{"--request-id", "claim", "next", "--runner", "laptop"}
+	out := e.ok("laptop", args...)
+	if !strings.Contains(out, "labels:    business, slow\n") {
+		t.Fatal(out)
+	}
+	brief := decodeBrief(t, e.ok("laptop", append(args, "--json")...))
+	if !reflect.DeepEqual(brief["item"]["labels"], []any{"business", "slow"}) {
+		t.Fatal(brief)
 	}
 }
 

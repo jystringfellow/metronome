@@ -15,13 +15,13 @@ func TestIssueBacklogMapsAnIssue(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	items, err := IssueBacklog("acme/app", "rev", issues[:1], nil)
+	items, err := IssueBacklog("acme/app", "rev", issues[:1], nil, "")
 	tier := 2
 	want := []flow.BacklogItem{{Ref: "acme/app#4", Title: "Export", Intent: "Export records.", Owner: "pat", PredictedTier: &tier, Slices: []flow.SliceSpec{{Title: "Export", Repo: "acme/app", Criteria: []string{"CSV"}, Approvers: []string{}}}}}
 	if err != nil || !reflect.DeepEqual(items, want) {
 		t.Fatalf("%+v %v", items, err)
 	}
-	items, err = IssueBacklog("acme/app", "pat", []Issue{{Number: 2, Title: "Import", Body: "Metronome: MET-17"}}, nil)
+	items, err = IssueBacklog("acme/app", "pat", []Issue{{Number: 2, Title: "Import", Body: "Metronome: MET-17"}}, nil, "")
 	if err != nil || items[0].Ref != "MET-17" || items[0].Owner != "pat" || items[0].PredictedTier != nil {
 		t.Fatal(items, err)
 	}
@@ -46,6 +46,21 @@ func TestIssueTier(t *testing.T) {
 	}
 }
 
+func TestIssueBacklogForeignClaims(t *testing.T) {
+	issues := []Issue{{Number: 7, Title: "Export", Labels: []string{"metronome:claimed:laptop-b", "METRONOME:CLAIMED:laptop-a", "metronome:claimed:hosted"}}}
+	for _, test := range []struct{ instance, want string }{{"laptop-a", "hosted,laptop-b"}, {"", "hosted,laptop-a,laptop-b"}} {
+		items, err := IssueBacklog("acme/app", "pat", issues, nil, test.instance)
+		if err != nil || items[0].ClaimedBy != test.want {
+			t.Fatal(items, err)
+		}
+	}
+	issues[0].Labels = []string{"metronome:claimed:laptop-a"}
+	items, err := IssueBacklog("acme/app", "pat", issues, nil, "laptop-a")
+	if err != nil || items[0].ClaimedBy != "" {
+		t.Fatal(items, err)
+	}
+}
+
 func TestIssueBacklogOrdersByRankThenAge(t *testing.T) {
 	older := time.Date(2026, 11, 25, 0, 0, 0, 0, time.UTC)
 	newer := older.Add(time.Hour)
@@ -57,7 +72,7 @@ func TestIssueBacklogOrdersByRankThenAge(t *testing.T) {
 		{map[int]float64{3: 2, 1: 1, 5: 1}, []string{"acme/app#5", "acme/app#1", "acme/app#3", "acme/app#2", "acme/app#4"}},
 		{nil, []string{"acme/app#2", "acme/app#3", "acme/app#5", "acme/app#1", "acme/app#4"}},
 	} {
-		items, err := IssueBacklog("acme/app", "pat", issues, test.ranks)
+		items, err := IssueBacklog("acme/app", "pat", issues, test.ranks, "")
 		var refs []string
 		for _, item := range items {
 			refs = append(refs, item.Ref)
@@ -70,7 +85,7 @@ func TestIssueBacklogOrdersByRankThenAge(t *testing.T) {
 
 func TestIssueBacklogReportsAllBadIssues(t *testing.T) {
 	issues := []Issue{{Number: 1, Title: "One"}, {Number: 2, Title: "Two", Body: "Metronome: acme/app#1", Labels: []string{"tier:9"}}}
-	items, err := IssueBacklog("acme/app", "", issues, nil)
+	items, err := IssueBacklog("acme/app", "", issues, nil, "")
 	if items != nil || err == nil {
 		t.Fatal(items, err)
 	}

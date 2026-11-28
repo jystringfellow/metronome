@@ -10,7 +10,7 @@ Metronome is a design and an early proof of concept.
 - [DECISIONS.md](DECISIONS.md): what has been decided, what the design review found, and what is still open.
 - [docs/runners.md](docs/runners.md): how agents take work and hand it back.
 - [docs/backlog.md](docs/backlog.md): the backlog JSON contract.
-- [docs/intake.md](docs/intake.md): writing a source command for scheduled intake.
+- [docs/intake.md](docs/intake.md): writing source commands for scheduled intake and publishing.
 
 ## What runs today
 
@@ -45,12 +45,25 @@ Plans still need their owner's approval. See [intake](docs/intake.md) for the ma
 owners, HTML descriptions, acceptance criteria, tags and repository markers. Assigned and non-ready
 work is skipped by intake. See [Azure DevOps intake](docs/intake.md#built-in-azure-devops).
 
+`metronome publish` mirrors workstream transitions back to a source command with a durable cursor.
+`metronome github publish` updates a GitHub Project Status without replacing a value changed by a person
+between runs, comments with PR links, marks claims and closes done issues. See the
+[publish contract](docs/intake.md#publishing-back-to-the-source).
+
+For one shared source, run the two commands (in separate terminals) with the same instance name:
+
+```sh
+metronome workstream create example
+metronome intake --workstream example --every 10m -- metronome github issues --repo acme/app --project acme/3 --instance laptop-a --owner pat
+metronome publish --workstream example --name board --every 1m -- metronome github publish --project acme/3 --instance laptop-a
+```
+
 ```sh
 go build -o metronome ./cmd/metronome
 export PATH="$PWD:$PATH"
 ./metronome serve --db metronome.db &
 
-./metronome backlog sync backlog.json        # {"items":[{"ref":"ACME-1","title":"…","intent":"…","owner":"pat"}]} (optional predicted_tier and slices; see docs/backlog.md)
+./metronome backlog sync backlog.json        # {"items":[{"ref":"ACME-1","title":"…","intent":"…","owner":"pat"}]} (optional labels, predicted_tier and slices; see docs/backlog.md)
 ./metronome plan start
 ./metronome plan propose I1 --slices slices.json   # [{"title":"…","repo":"acme/app","criteria":["…"],"approvers":["rev"]},{"title":"…","repo":"acme/app","after":[1]}]
 ./metronome --as pat plan approve I1
@@ -73,6 +86,7 @@ metronome intake --workstream default -- metronome ado items --org https://dev.a
 ./metronome workstream set example --execute 2
 ./metronome workstream list
 ./metronome board --workstream example
+./metronome board --label slow
 ```
 
 Run `metronome help` for every command.

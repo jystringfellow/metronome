@@ -33,7 +33,7 @@ Service:
   serve [--addr 127.0.0.1:7340] [--db metronome.db] [--tick 30s]  also serves a read-only board page at /
 
 Looking:
-  board [--workstream NAME] [--json]  limits, usage, items, slices, open runs and asks
+  board [--workstream NAME] [--label L] [--json]  limits, usage, items, slices, open runs and asks
   inbox OWNER                     open asks for one person, oldest first
   events [--after SEQ]            the event log
 
@@ -45,8 +45,10 @@ Workstreams:
 Backlog and plan:
   backlog sync [--workstream NAME] FILE  add ranked items (default workstream if omitted)
                          skips items with "claimed_by" set
-                         items may carry "slices" (as plan propose) and an optional "predicted_tier" (default 1); see docs/backlog.md
+                         items may carry "labels", "slices" (as plan propose) and an optional "predicted_tier" (default 1); see docs/backlog.md
   intake --workstream NAME [--every D] -- CMD [ARGS...]  mirror Ready from a source command; see docs/intake.md
+  publish --workstream NAME --name PUBLISHER [--every D] [--batch N] -- CMD [ARGS...]
+                         mirror transitions to a publisher command; see docs/intake.md
   plan start [--workstream NAME] [ITEM]  pull the top ready item with capacity
                          an item with backlog slices is proposed and its owner asked to approve
   plan propose ITEM --slices FILE [--approver WHO]
@@ -67,8 +69,10 @@ People:
   release-done ITEM               finish the release of a tier 2 or 3 item
 
 GitHub:
-  github issues --repo OWNER/NAME [--label L] [--project OWNER/N [--rank-field Rank]] [--owner WHO]
+  github issues --repo OWNER/NAME [--label L] [--project OWNER/N [--rank-field Rank]] [--owner WHO] [--instance NAME]
                          print backlog JSON from open labelled issues, for intake; see docs/intake.md
+  github publish --project OWNER/N --instance NAME [--status-field Status] [--map TRANSITION=OPTION] [--assignee LOGIN]
+                         read transitions and update project Status, PR links and issue claims
   github poll [--every 1m]        record what GitHub shows for each submitted slice's branch, once or on a repeat
   github pr-opened --slice S --repo OWNER/NAME --number N --head SHA
   github checks --slice S --head SHA (--success | --failure)
@@ -95,6 +99,8 @@ type app struct {
 	prs         github.Source
 	issues      github.IssueSource
 	boards      ado.Source
+	projects    github.ProjectBoard
+	stdin       io.Reader
 	terminal    func() bool
 }
 
@@ -103,6 +109,8 @@ type Deps struct {
 	GitHub   github.Source
 	Issues   github.IssueSource
 	Boards   ado.Source
+	Projects github.ProjectBoard
+	Stdin    io.Reader
 	Terminal func() bool
 }
 
@@ -127,6 +135,12 @@ func RunWithDeps(ctx context.Context, args []string, out, errOut io.Writer, deps
 	if deps.Boards == nil {
 		deps.Boards = ado.AZ{}
 	}
+	if deps.Projects == nil {
+		deps.Projects = github.GH{}
+	}
+	if deps.Stdin == nil {
+		deps.Stdin = os.Stdin
+	}
 	if deps.Terminal == nil {
 		deps.Terminal = func() bool { return isatty.IsTerminal(os.Stdin.Fd()) }
 	}
@@ -144,7 +158,7 @@ func RunWithDeps(ctx context.Context, args []string, out, errOut io.Writer, deps
 		global.Usage()
 		return 2
 	}
-	a := &app{out: out, errOut: errOut, requestID: *requestID, prs: deps.GitHub, issues: deps.Issues, boards: deps.Boards, terminal: deps.Terminal,
+	a := &app{out: out, errOut: errOut, requestID: *requestID, prs: deps.GitHub, issues: deps.Issues, boards: deps.Boards, projects: deps.Projects, stdin: deps.Stdin, terminal: deps.Terminal,
 		client: &api.Client{BaseURL: *server, Actor: *actor, HTTP: deps.HTTP}}
 	if err := a.dispatch(ctx, rest[0], rest[1:]); err != nil {
 		var status exitStatus
@@ -189,6 +203,8 @@ func (a *app) dispatch(ctx context.Context, cmd string, args []string) error {
 		return a.backlog(ctx, args)
 	case "intake":
 		return a.intake(ctx, args)
+	case "publish":
+		return a.publish(ctx, args)
 	case "workstream":
 		return a.workstream(ctx, args)
 	case "plan":
@@ -276,12 +292,19 @@ func (a *app) serve(ctx context.Context, args []string) error {
 func (a *app) board(ctx context.Context, args []string) error {
 	fs := newFlags("board")
 	ws := fs.String("workstream", "", "")
+	label := fs.String("label", "", "")
 	asJSON := fs.Bool("json", false, "")
 	if err := parse(fs, args, 0); err != nil {
 		return err
 	}
 	var b api.Board
-	if err := a.client.Get(ctx, "/v1/board?workstream="+url.QueryEscape(*ws), &b); err != nil {
+	query := url.Values{"workstream": {*ws}}
+	fs.Visit(func(option *flag.Flag) {
+		if option.Name == "label" {
+			query.Set("label", *label)
+		}
+	})
+	if err := a.client.Get(ctx, "/v1/board?"+query.Encode(), &b); err != nil {
 		return err
 	}
 	if *asJSON {
@@ -297,7 +320,7 @@ func (a *app) board(ctx context.Context, args []string) error {
 		l, u := ws.Limits, ws.Usage
 		fmt.Fprintf(a.out, "workstream %s  ready %d/%d  plan %d/%d  execute %d/%d  review %d/%d  release %d/%d\n", ws.Name, u.Ready, l.Ready, u.Plan, l.Plan, u.Execute, l.Execute, u.Review, l.Review, u.Release, l.Release)
 		tw := tabwriter.NewWriter(a.out, 0, 2, 2, ' ', 0)
-		fmt.Fprintln(tw, "\nITEM\tSTATUS\tTIER\tOWNER\tTITLE")
+		fmt.Fprintln(tw, "\nITEM\tSTATUS\tTIER\tOWNER\tLABELS\tTITLE")
 		for _, it := range b.Items {
 			if it.Workstream != ws.Name {
 				continue
@@ -305,7 +328,7 @@ func (a *app) board(ctx context.Context, args []string) error {
 			if it.Status == flow.ItemDone || it.Status == flow.ItemDropped || it.Status == flow.ItemShelved {
 				continue
 			}
-			fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%s\n", it.ID, it.Status, it.PredictedTier, it.Owner, it.Title)
+			fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%s\t%s\n", it.ID, it.Status, it.PredictedTier, it.Owner, dash(strings.Join(it.Labels, ", ")), it.Title)
 		}
 		fmt.Fprintln(tw, "\nSLICE\tSTATUS\tSLOTS\tRUN\tPR\tTITLE")
 		for _, sl := range b.Slices {
@@ -531,10 +554,11 @@ type briefSlice struct {
 }
 
 type briefItem struct {
-	ID     string `json:"id"`
-	Ref    string `json:"ref"`
-	Title  string `json:"title"`
-	Intent string `json:"intent"`
+	ID     string   `json:"id"`
+	Ref    string   `json:"ref"`
+	Title  string   `json:"title"`
+	Intent string   `json:"intent"`
+	Labels []string `json:"labels"`
 }
 
 type briefHistory struct {
@@ -599,7 +623,7 @@ func (a *app) readBrief(ctx context.Context, c flow.Claim) (brief, error) {
 					Claim: briefClaim{Workstream: c.Workstream, RunID: c.RunID, SliceID: c.SliceID, LeaseUntil: c.LeaseUntil.UTC()},
 					Slice: briefSlice{ID: sl.ID, Repo: sl.Repo, Title: sl.Title,
 						Criteria: append([]string{}, sl.Criteria...), Approvers: append([]string{}, sl.Approvers...)},
-					Item:    briefItem{ID: it.ID, Ref: it.Ref, Title: it.Title, Intent: it.Intent},
+					Item:    briefItem{ID: it.ID, Ref: it.Ref, Title: it.Title, Intent: it.Intent, Labels: append([]string{}, it.Labels...)},
 					History: newBriefHistory(snapshot),
 				}, nil
 			}
@@ -620,6 +644,9 @@ func (b brief) writeText(w io.Writer) error {
 		intent = "none given"
 	}
 	fmt.Fprintf(&text, "intent:    %s\n", strings.ReplaceAll(intent, "\n", "\n           "))
+	if len(b.Item.Labels) > 0 {
+		fmt.Fprintf(&text, "labels:    %s\n", strings.Join(b.Item.Labels, ", "))
+	}
 	if len(b.Slice.Criteria) == 0 {
 		fmt.Fprintln(&text, "criteria:  none given")
 	} else {
@@ -767,6 +794,9 @@ func (a *app) github(ctx context.Context, args []string) error {
 	}
 	if event == "issues" {
 		return a.githubIssues(ctx, args)
+	}
+	if event == "publish" {
+		return a.githubPublish(ctx, args)
 	}
 	fs := newFlags("github " + event)
 	var req api.GitHubRequest

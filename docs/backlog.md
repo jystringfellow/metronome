@@ -18,12 +18,19 @@ an [intake command](intake.md).
 | `ref` | string | Yes | — | Backlog reference, unique across workstreams. Known refs are skipped. |
 | `title` | string | Yes | — | Item title. |
 | `intent` | string | No | `""` | Why the work is needed. |
+| `labels` | array of strings | No | empty | Short tags from the source. |
 | `owner` | string | Yes | — | Person responsible for the item and its plan approval. |
 | `value` | number | No | `0` | Item value. |
 | `predicted_tier` | integer, 0 to 3 | No | `1` | Tier proposed for confirmation. If absent or `null`, the approval ask explains the default; explicit `0` stays 0. |
 | `slices` | array of slices | No | empty | Pre-planned slices. Absent, `null` or `[]` means the plan must be proposed in Plan. |
 | `labels` | array of strings | No | empty | Source labels saved with the item and shown in board JSON; each must be nonempty. |
 | `claimed_by` | string | No | `""` | Nonempty when the source reports a claim held by someone other than this Metronome instance. The source command recognises its own claims. |
+
+**Labels:** absent, `null` and `[]` all mean no labels. Each label is trimmed, internal whitespace runs
+are collapsed to a single space, and the result is lowercased. Labels are de-duplicated and sorted.
+After normalisation, an item may have at most 20 distinct labels, each 1 to 40 characters long,
+starting with an ASCII letter or digit and containing only `a-z`, `0-9`, space and `. _ - : /`.
+Commas are not allowed. An invalid label refuses the entire sync or intake, even on a known ref.
 
 ## Slice fields
 
@@ -60,6 +67,7 @@ without `--tier`, the predicted tier is confirmed.
       "ref": "ACME-1",
       "title": "Add export",
       "intent": "Let people save their records",
+      "labels": ["business", "slow"],
       "owner": "pat",
       "value": 5,
       "slices": [

@@ -48,6 +48,8 @@ func repoBlocks(blocks []block, repo *string) ([]block, error) {
 	return result, nil
 }
 
+const maxLabels = 20
+
 func Backlog(items []WorkItem, owner string, ready []string) (Result, error) {
 	items = slices.Clone(items)
 	slices.SortFunc(items, func(left, right WorkItem) int {
@@ -99,9 +101,11 @@ func Backlog(items []WorkItem, owner string, ready []string) (Result, error) {
 			if ok && strings.EqualFold(key, "tier") {
 				continue
 			}
-			if !slices.Contains(backlog.Labels, tag) {
-				backlog.Labels = append(backlog.Labels, tag)
+			label, err := flow.NormaliseLabel(tag)
+			if err != nil || slices.Contains(backlog.Labels, label) || len(backlog.Labels) == maxLabels {
+				continue
 			}
+			backlog.Labels = append(backlog.Labels, label)
 		}
 		var repo string
 		description, err := repoBlocks(htmlBlocks(work.Description), &repo)
