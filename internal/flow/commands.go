@@ -735,6 +735,34 @@ func (e *Engine) ChecksCompleted(ctx context.Context, actor, requestID, sliceID,
 	})
 }
 
+func (e *Engine) ReworkFixed(ctx context.Context, actor, requestID, sliceID, repo string, number int, headSHA, by string) (Result, error) {
+	return e.execute(ctx, actor, requestID, func(d *decider) error {
+		sl, err := d.sliceWithPR(sliceID)
+		if err != nil {
+			return err
+		}
+		if repo == "" || number <= 0 || headSHA == "" {
+			return fail(CodeInvalid, "a PR needs a repo, a number and a head SHA")
+		}
+		if sl.Status != SliceQueued && sl.Status != SliceStalled {
+			return fail(CodeConflict, "slice %s is %s; a fix outside a run returns a slice to review only while it waits for rework (queued or stalled)", sl.ID, sl.Status)
+		}
+		if !sl.Rework {
+			return fail(CodeConflict, "slice %s is not waiting for rework", sl.ID)
+		}
+		if repo != sl.PR.Repo || number != sl.PR.Number {
+			return fail(CodeConflict, "only the recorded PR can return slice %s to review", sl.ID)
+		}
+		if headSHA == sl.PR.HeadSHA {
+			return fail(CodeConflict, "the head %s is the one sent back for rework", headSHA)
+		}
+		d.emit(EvPROpened, prOpened{SliceID: sl.ID, Repo: repo, Number: number, HeadSHA: headSHA})
+		d.emit(EvChecksCompleted, checksCompleted{SliceID: sl.ID, HeadSHA: headSHA, Success: true})
+		d.emit(EvReworkFixed, reworkFixed{SliceID: sl.ID, HeadSHA: headSHA, By: by})
+		return nil
+	})
+}
+
 func (e *Engine) ReadyForReview(ctx context.Context, actor, requestID, sliceID string) (Result, error) {
 	return e.execute(ctx, actor, requestID, func(d *decider) error {
 		sl, err := d.sliceWithPR(sliceID)

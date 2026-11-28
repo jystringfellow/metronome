@@ -370,6 +370,7 @@ function eventSentence(event, lookup) {
       case 'pr_opened': if (data.repo && data.number) text = `${actor} recorded PR ${data.repo}#${data.number} for ${slice}`; break;
       case 'checks_completed': if (typeof data.success === 'boolean' && data.head_sha) text = `Checks ${data.success ? 'passed' : 'failed'} for ${slice} at ${data.head_sha.slice(0, 7)}`; break;
       case 'pr_ready_for_review': text = `${slice} is ready for review`; break;
+      case 'rework_fixed': if (data.head_sha) text = `${slice} is back in review at ${data.head_sha.slice(0, 7)}${data.by ? `, pushed by ${data.by}` : ''}`; break;
       case 'pr_approved': if (data.by && data.head_sha) text = `${data.by} approved ${slice} at ${data.head_sha.slice(0, 7)}`; break;
       case 'approval_withdrawn': text = `Approval was withdrawn for ${slice}`; break;
       case 'pr_changes_requested': if (data.by) text = `${data.by} requested changes on ${slice}`; break;

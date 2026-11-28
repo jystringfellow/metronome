@@ -106,7 +106,8 @@ The `history.reason` field explains why work is available again:
 | `ask_timed_out` | An unanswered ask timed out and the slice parked. |
 
 `rework` is true after failed checks or a change request. `rework_reason` and its associated `failed_head`
-or `changes_requested_by` persist until the next submit, even if a subsequent interruption changes `reason`.
+or `changes_requested_by` persist until the next submit or return to review after a fix outside a run, even if
+a subsequent interruption changes `reason`.
 `previous_run` is the previous run ID and `branch` is the last submitted branch, or `""` when absent.
 `pr` contains `repo`, `number` and `head_sha` for the recorded PR, or is `null` when absent. `asks` lists
 resolved asks on this slice in raised order, with `id`, `type`, `question`, `answer`, `answered_by` (empty
@@ -190,6 +191,12 @@ Without `--every`, the poller runs once. It follows the PR on the submitted bran
 checks on its head, review and merge. A change request that sends the slice back to Execute makes it available
 for another claim as rework. The new brief identifies who requested changes in `history.changes_requested_by`.
 The runner must not enter GitHub events by hand.
+
+A slice waiting for rework (queued or stalled) whose recorded PR gets a new green head, for example when a
+person pushes a fix, returns to review without a runner and is no longer claimable. The poller records the
+head commit's author as the pusher when available. Running rework is unaffected: the runner must still push
+and submit. If a run closes by drop or lease expiry after pushing a green head, the poller may return the
+slice to review.
 
 ## Wrap an agent with `metronome run`
 

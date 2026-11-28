@@ -202,6 +202,8 @@ func Handler(eng *flow.Engine) http.Handler {
 			return eng.PRApproved(ctx, c.actor, c.requestID, req.SliceID, req.HeadSHA, req.By)
 		case "changes-requested":
 			return eng.PRChangesRequested(ctx, c.actor, c.requestID, req.SliceID, req.By)
+		case "rework-fixed":
+			return eng.ReworkFixed(ctx, c.actor, c.requestID, req.SliceID, req.Repo, req.Number, req.HeadSHA, req.By)
 		case "merged":
 			return eng.PRMerged(ctx, c.actor, c.requestID, req.SliceID, req.By)
 		}

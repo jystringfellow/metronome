@@ -17,8 +17,9 @@ Metronome is a design and an early proof of concept.
 Build step 1 of the SPEC, local only: one `metronome` binary holding an HTTP service, a CLI and an append-only
 event log in SQLite. Items, slices, runs, slots and asks are all derived from the log, so restarting the service
 replays it. `metronome github poll` reads each submitted slice's PR through `gh` and records what GitHub shows:
-the PR opening, checks on its head, review and merge. The same events can still be entered by hand
-(`metronome github …`).
+the PR opening, checks on its head, review and merge. It also returns a slice waiting for rework to review
+when its recorded PR gets a new green head outside a run. The same events can still be entered by hand
+(`metronome github …`, including `metronome github rework-fixed`).
 
 Each item belongs to one workstream, with independent Ready, Plan, Execute, Review and Release limits.
 The approver cap remains global per person. Existing logs and backlog syncs without a workstream use

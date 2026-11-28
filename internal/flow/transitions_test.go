@@ -59,6 +59,21 @@ func TestTransitionLifecycleAndReplay(t *testing.T) {
 	}
 }
 
+func TestReworkFixedTransition(t *testing.T) {
+	h := newHarness(t, nil)
+	h.backlog(1)
+	h.approvedItem("I1", 1)
+	claim := h.claim("laptop")
+	h.toReview(claim.SliceID)
+	h.ok(h.eng.ChecksCompleted(ctx(), "github", "", claim.SliceID, "sha-"+claim.SliceID, false))
+	events := h.eng.EventsAfter(0, 0)
+	h.ok(h.eng.ReworkFixed(ctx(), "github", "", claim.SliceID, "acme/app", 10, "ccc", "sam"))
+	transitions, more := h.eng.Transitions("default", events[len(events)-1].Seq, 100)
+	if more || len(transitions) != 1 || transitions[0].Transition != "in_review" || transitions[0].From != "stalled" || transitions[0].PR == nil || transitions[0].PR.Head != "ccc" {
+		t.Fatal(transitions, more)
+	}
+}
+
 func TestTransitionWorkstreamBatchAndWithdrawal(t *testing.T) {
 	h := newHarness(t, nil)
 	h.backlog(1)

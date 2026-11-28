@@ -31,6 +31,12 @@ func (a Action) String() string {
 		return fmt.Sprintf("%s approved by %s at %s", r.SliceID, r.By, short(r.HeadSHA))
 	case "changes-requested":
 		return fmt.Sprintf("%s changes requested by %s", r.SliceID, r.By)
+	case "rework-fixed":
+		text := fmt.Sprintf("%s back in review at %s, fixed outside a run", r.SliceID, short(r.HeadSHA))
+		if r.By != "" {
+			text += " by " + r.By
+		}
+		return text
 	case "merged":
 		if r.By != "" {
 			return fmt.Sprintf("%s merged by %s, who approves it", r.SliceID, r.By)
@@ -87,8 +93,28 @@ func Reconcile(sl flow.Slice, snap *Snapshot) (actions []Action, notes []string)
 		return actions, notes
 	}
 	if reworking(sl.Status) {
+		newReworkHead := (sl.Status == flow.SliceQueued || sl.Status == flow.SliceStalled) && sl.Rework && known && snap.HeadSHA != sl.PR.HeadSHA
+		fixable := newReworkHead && snap.HeadChecks == ChecksSuccess
+		if fixable && ((snap.State == PROpen && !snap.Draft) || (snap.State == PRMerged && snap.MergedBy != "")) {
+			req := base
+			req.By = snap.HeadAuthor
+			add("rework-fixed", fmt.Sprintf("fixed:%s:v%d", snap.HeadSHA, sl.Version), req)
+			if snap.HeadAuthor == "" {
+				note("GitHub does not say who pushed %s; recorded without a pusher", short(snap.HeadSHA))
+			}
+			if snap.State == PRMerged {
+				add("merged", "merged", api.GitHubRequest{SliceID: sl.ID, By: snap.MergedBy})
+			} else {
+				recordReviews(sl, snap, base, true, add, note)
+			}
+			return actions, notes
+		}
 		decision := "nothing recorded, and a person must decide, for example drop the item or reopen the work"
 		switch snap.State {
+		case PROpen:
+			if newReworkHead && !snap.Draft && snap.HeadChecks == ChecksNone {
+				note("no checks reported on %s; a slice waiting for rework returns to review only on green checks", short(snap.HeadSHA))
+			}
 		case PRMerged:
 			if snap.MergedBy == "" {
 				note("merged while the slice is %s for rework, but GitHub does not say who merged it; %s", sl.Status, decision)
@@ -177,12 +203,16 @@ func Reconcile(sl flow.Slice, snap *Snapshot) (actions []Action, notes []string)
 	if status != flow.SliceInReview {
 		return actions, notes
 	}
+	recordReviews(sl, snap, base, green, add, note)
+	return actions, notes
+}
 
+func recordReviews(sl flow.Slice, snap *Snapshot, base api.GitHubRequest, green bool, add func(string, string, api.GitHubRequest), note func(string, ...any)) {
 	latest := latestVerdicts(snap.Reviews, sl.Approvers)
 	for _, r := range latest {
 		if r.State == ReviewChangesRequested && r.CommitSHA == snap.HeadSHA {
 			add("changes-requested", "review:"+r.ID, api.GitHubRequest{SliceID: sl.ID, By: r.Author})
-			return actions, notes
+			return
 		}
 	}
 	for _, r := range latest {
@@ -195,14 +225,13 @@ func Reconcile(sl flow.Slice, snap *Snapshot) (actions []Action, notes []string)
 		}
 		if !green {
 			note("approved by %s but checks on %s are not green", r.Author, short(snap.HeadSHA))
-			return actions, notes
+			return
 		}
 		req := base
 		req.By = r.Author
 		add("approved", fmt.Sprintf("review:%s:v%d", r.ID, sl.Version), req)
-		return actions, notes
+		return
 	}
-	return actions, notes
 }
 
 func latestVerdicts(reviews []Review, approvers []string) []Review {

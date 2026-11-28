@@ -428,6 +428,129 @@ func TestAReworkClaimAfterRedChecksInReviewNeedsAnExecuteSlot(t *testing.T) {
 	}
 }
 
+func TestReworkFixedReturnsToReviewAndReplays(t *testing.T) {
+	for _, scenario := range []string{"stalled", "queued", "parked"} {
+		t.Run(scenario, func(t *testing.T) {
+			h := newHarness(t, func(cfg *flow.Config) { cfg.Limits.Review = 1 })
+			h.backlog(1)
+			h.approvedItemAt("I1", 1, 1)
+			claim := h.claim("laptop")
+			id := claim.SliceID
+			h.toReview(id)
+			if scenario == "queued" {
+				h.ok(h.eng.PRChangesRequested(ctx(), "github", "", id, "rev"))
+			} else {
+				h.newHead(id, "bbb")
+				h.ok(h.eng.ChecksCompleted(ctx(), "github", "", id, "bbb", false))
+			}
+			if scenario == "parked" {
+				h.clock.advance(h.cfg.StallTimeout)
+				h.ok(h.eng.Tick(ctx()))
+				if sl := h.slice(id); sl.Status != flow.SliceQueued || sl.HoldsReview {
+					t.Fatal(sl)
+				}
+				h.ok(h.eng.SyncBacklog(ctx(), "test", "", "", []flow.BacklogItem{{Ref: "ACME-2", Title: "second item", Owner: "pat"}}))
+				h.approvedItem("I2", 1)
+				h.ok(h.eng.Claim(ctx(), "laptop", "", "laptop", "", "I2.1"))
+			}
+			result := h.ok(h.eng.ReworkFixed(ctx(), "github", "fixed", id, "acme/app", 10, "ccc", "sam"))
+			var types []string
+			for _, event := range result.Events {
+				types = append(types, event.Type)
+			}
+			if !reflect.DeepEqual(types, []string{flow.EvPROpened, flow.EvChecksCompleted, flow.EvReworkFixed}) || !strings.Contains(string(result.Events[2].Data), `"by":"sam"`) {
+				t.Fatal(result)
+			}
+			sl := h.slice(id)
+			if sl.Status != flow.SliceInReview || sl.PR.HeadSHA != "ccc" || !sl.PR.ChecksGreen || !sl.PR.ChecksRecorded || sl.Rework || sl.Resume != "" || sl.ReworkReason != "" || sl.FailedHead != "" || sl.ChangesRequestedBy != "" || !sl.HoldsReview || sl.HoldsExecute || sl.Front || !sl.StalledAt.IsZero() {
+				t.Fatalf("fixed slice = %+v, PR = %+v", sl, sl.PR)
+			}
+			if scenario == "parked" && h.usage().Review != 2 {
+				t.Fatal(h.usage())
+			}
+			duplicate := h.ok(h.eng.ReworkFixed(ctx(), "github", "fixed", id, "acme/app", 10, "ccc", "sam"))
+			if !duplicate.Duplicate {
+				t.Fatal(duplicate)
+			}
+			h.eng = h.reload()
+			if !reflect.DeepEqual(sl, h.slice(id)) {
+				t.Fatal(h.slice(id))
+			}
+			_, err := h.eng.Claim(ctx(), "laptop", "", "laptop", "", id)
+			wantCode(t, err, flow.CodeConflict)
+			h.ok(h.eng.PRMerged(ctx(), "github", "", id, "pat"))
+			if sl := h.slice(id); sl.Status != flow.SliceMerged || sl.PR.ApprovedSHA != "ccc" {
+				t.Fatal(sl)
+			}
+			if it := h.item("I1"); it.Status != flow.ItemDone {
+				t.Fatal(it)
+			}
+		})
+	}
+}
+
+func TestReworkFixedRefusesInvalidRequests(t *testing.T) {
+	h := newHarness(t, nil)
+	h.backlog(1)
+	h.approvedItem("I1", 1)
+	claim := h.claim("laptop")
+	id := claim.SliceID
+	refuse := func(slice, repo string, number int, head string, code flow.ErrorCode) {
+		t.Helper()
+		before := len(h.eng.EventsAfter(0, 0))
+		_, err := h.eng.ReworkFixed(ctx(), "github", "", slice, repo, number, head, "sam")
+		wantCode(t, err, code)
+		if len(h.eng.EventsAfter(0, 0)) != before {
+			t.Fatal("refused request added events")
+		}
+	}
+	refuse("missing", "acme/app", 10, "ccc", flow.CodeNotFound)
+	refuse(id, "acme/app", 10, "ccc", flow.CodeConflict)
+	h.toReview(id)
+	refuse(id, "acme/app", 10, "ccc", flow.CodeConflict)
+	h.ok(h.eng.PRChangesRequested(ctx(), "github", "", id, "rev"))
+	refuse(id, "acme/app", 10, "sha-"+id, flow.CodeConflict)
+	refuse(id, "acme/app", 11, "ccc", flow.CodeConflict)
+	refuse(id, "acme/other", 10, "ccc", flow.CodeConflict)
+	refuse(id, "", 10, "ccc", flow.CodeInvalid)
+	refuse(id, "acme/app", 0, "ccc", flow.CodeInvalid)
+	refuse(id, "acme/app", 10, "", flow.CodeInvalid)
+	fixer := h.claim("laptop")
+	refuse(id, "acme/app", 10, "ccc", flow.CodeConflict)
+	h.ok(h.eng.FlagRun(ctx(), "laptop", "", fixer.RunID, flow.AskAnswer, "Which format?", ""))
+	refuse(id, "acme/app", 10, "ccc", flow.CodeConflict)
+}
+
+func TestReworkFixedRefusesSlicesNotWaitingForRework(t *testing.T) {
+	h := newHarness(t, nil)
+	h.backlog(1)
+	h.approvedItem("I1", 1)
+	id := "I1.1"
+	refuse := func() {
+		t.Helper()
+		before := len(h.eng.EventsAfter(0, 0))
+		_, err := h.eng.ReworkFixed(ctx(), "github", "", id, "acme/app", 10, "ccc", "sam")
+		wantCode(t, err, flow.CodeConflict)
+		if len(h.eng.EventsAfter(0, 0)) != before {
+			t.Fatal("refused request added events")
+		}
+	}
+	h.newHead(id, "aaa")
+	refuse()
+	claim := h.claim("laptop")
+	h.ok(h.eng.Submit(ctx(), "laptop", "", claim.RunID, "metronome/"+id))
+	refuse()
+	h.newHead(id, "bbb")
+	refuse()
+	h.ok(h.eng.ChecksCompleted(ctx(), "github", "", id, "bbb", true))
+	h.ok(h.eng.ReadyForReview(ctx(), "github", "", id))
+	refuse()
+	h.ok(h.eng.PRApproved(ctx(), "github", "", id, "bbb", "rev"))
+	refuse()
+	h.ok(h.eng.PRMerged(ctx(), "github", "", id, "pat"))
+	refuse()
+}
+
 func TestChecksForAnotherHeadAreRefusedAndChangeNothing(t *testing.T) {
 	for _, tc := range []struct {
 		name     string

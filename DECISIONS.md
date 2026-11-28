@@ -303,6 +303,35 @@ open.
 - A parked slice is queued, so it is followed too if it has a PR, consistent with the maintainer's decision.
 - An open PR on these slices produces no note, as for stalled slices, to keep polls quiet while a fixer works.
 
+## Decided by the maintainer (2026-11-28): a slice fixed outside a run returns to review
+
+- A slice waiting for rework (queued or stalled, not claimed by a run) returns to review when its recorded
+  PR gets a new green head. Record the pusher; no runner is needed. This avoids the stuck item seen in #48.
+- A subsequent merge is recorded as for any slice in review, counting as approval by whoever merged it.
+- Running rework is unaffected: the runner's push and submit remain the path.
+- A new red head or one without completed checks leaves the slice in rework.
+- Cover these rules in reconcile cases and end-to-end poll tests. This narrows the 2026-11-26 rule against
+  recording merges during rework and the 2026-11-27 rule that open PRs wait for resubmit, for queued and
+  stalled slices only.
+
+## Agent decision (2026-11-28): implementing fixes outside a run
+
+- Compose a new `rework_fixed` event after `pr_opened` and green `checks_completed` in one command, so
+  existing event logs retain their meaning.
+- Use the head commit's first linked author login as the pusher because `gh pr list` does not expose the
+  push actor. Record the fix even if the login is missing, with a note rather than inventing a name.
+- Exclude flagged slices because an open ask awaits a person; only queued and stalled slices qualify.
+- Only the recorded PR counts, since a replacement PR has not been associated with the slice.
+- Draft PRs stay in rework because drafts do not move into review.
+- Restore the Review reservation even over its limit, as for approval withdrawal; do not take an Execute
+  slot because no runner is working.
+- Clear rework evidence as at submit because the slice is no longer waiting for a fix.
+- A merge first seen at a new green head with a known merger records the fix then the merge, as if a poll
+  had observed the push before the merge.
+- Note a new head with no checks so a person knows why the slice stays in rework. Other open-PR rework
+  polls stay quiet unless recording a fix or evaluating its review.
+- A claim racing with the poll surfaces as a poll error rather than displacing the run.
+
 ## Designed, not built: open workstreams and shared work (2026-11-26)
 
 Recorded so the data model leaves room for it. Nothing here is in the proof of concept.
@@ -719,11 +748,11 @@ Choices made while building step 1 where SPEC.md was silent. Each is easy to cha
   its slices out of review. A draft PR never moves into review.
 - **Reported, not recorded:** a PR closed without merging, and a closed or merged PR on the branch that
   Metronome never recorded for the slice, such as one left from an earlier use of the branch name. The poller
-  also follows a slice being reworked (queued, running, flagged or stalled) that has a recorded PR, only to
-  report: when that PR is merged or closed, the poll names the slice, the PR, what happened and who
-  merged if known, and says a person must decide, for example drop the item or reopen the work. The engine still
-  refuses a merge during rework, so nothing is recorded. While the PR is open, new heads, checks and reviews wait
-  until the fixer resubmits. (Updated 2026-11-27.)
+  also follows a slice being reworked (queued, running, flagged or stalled) that has a recorded PR. Queued
+  or stalled slices return to review on a new green head and may then merge. Running and flagged slices
+  still wait for the fixer. Otherwise, when that PR is merged or closed, the poll names the slice, the PR,
+  what happened and who merged if known, and says a person must decide. The engine refuses a merge while
+  the slice remains in rework. (Updated 2026-11-28.)
 
 ## Verified on the development machine
 
@@ -733,6 +762,10 @@ Choices made while building step 1 where SPEC.md was silent. Each is easy to cha
 ## Open
 
 Everything section 12 of SPEC.md marks Open or Unverified, plus:
+
+- 2026-11-28: whether a flagged slice should also return to review on a green push.
+- 2026-11-28: whether to use the push or timeline actor instead of the head commit author for the pusher.
+- 2026-11-28: whether to adopt a replacement PR on a rework slice's branch.
 
 - 2026-11-27: whether the closing retry schedule and bounds should become flags, and whether a lost submit
   should automatically raise an ask for the item owner.
