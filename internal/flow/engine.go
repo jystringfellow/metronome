@@ -56,13 +56,14 @@ type Result struct {
 }
 
 type Engine struct {
-	mu     sync.Mutex
-	cfg    Config
-	store  Store
-	clock  func() time.Time
-	state  *State
-	events []Event
-	byID   map[string]int
+	mu          sync.Mutex
+	cfg         Config
+	store       Store
+	clock       func() time.Time
+	state       *State
+	events      []Event
+	transitions []Transition
+	byID        map[string]int
 }
 
 func NewEngine(ctx context.Context, cfg Config, store Store, clock func() time.Time) (*Engine, error) {
@@ -76,9 +77,11 @@ func NewEngine(ctx context.Context, cfg Config, store Store, clock func() time.T
 		return nil, fmt.Errorf("load events: %w", err)
 	}
 	for _, ev := range events {
-		if err := e.state.Apply(ev); err != nil {
+		transitions, err := e.state.ApplyTransitions(ev)
+		if err != nil {
 			return nil, err
 		}
+		e.transitions = append(e.transitions, transitions...)
 		e.record(ev)
 	}
 	return e, nil
@@ -156,9 +159,11 @@ func (e *Engine) commit(ctx context.Context, d *decider) (Result, error) {
 		return Result{}, fmt.Errorf("append events: %w", err)
 	}
 	for _, ev := range stored {
-		if err := e.state.Apply(ev); err != nil {
+		transitions, err := e.state.ApplyTransitions(ev)
+		if err != nil {
 			return Result{}, err
 		}
+		e.transitions = append(e.transitions, transitions...)
 		e.record(ev)
 	}
 	return Result{Events: stored, Notes: d.notes}, nil

@@ -19,6 +19,7 @@ func (a *app) githubIssues(ctx context.Context, args []string) error {
 	project := fs.String("project", "", "")
 	field := fs.String("rank-field", "Rank", "")
 	owner := fs.String("owner", "", "")
+	instance := fs.String("instance", "", "")
 	if err := parse(fs, args, 0); err != nil {
 		return err
 	}
@@ -27,6 +28,9 @@ func (a *app) githubIssues(ctx context.Context, args []string) error {
 	}
 	if strings.TrimSpace(*label) == "" || strings.Contains(*label, ",") {
 		return usagef("--label must be one nonempty label")
+	}
+	if *instance != "" && !github.InstanceName.MatchString(*instance) {
+		return usagef("invalid --instance")
 	}
 	var projectSet, fieldSet bool
 	fs.Visit(func(f *flag.Flag) {
@@ -57,7 +61,7 @@ func (a *app) githubIssues(ctx context.Context, args []string) error {
 			return err
 		}
 	}
-	items, err := github.IssueBacklog(*repo, strings.TrimSpace(*owner), issues, ranks)
+	items, err := github.IssueBacklog(*repo, strings.TrimSpace(*owner), issues, ranks, *instance)
 	if err != nil {
 		return err
 	}

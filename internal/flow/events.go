@@ -193,6 +193,18 @@ func (s *State) Apply(e Event) error {
 
 func (s *State) apply(e Event) error {
 	switch e.Type {
+	case EvPublisherAdvanced:
+		var p publisherAdvanced
+		if err := json.Unmarshal(e.Data, &p); err != nil {
+			return err
+		}
+		key := p.Workstream + "/" + p.Publisher
+		cursor := s.Publishers[key]
+		cursor.Seq = p.Seq
+		if p.State != nil {
+			cursor.State = p.State
+		}
+		s.Publishers[key] = cursor
 	case EvWorkstreamCreated, EvWorkstreamLimitsSet:
 		var p workstreamLimits
 		if err := json.Unmarshal(e.Data, &p); err != nil {
