@@ -1,0 +1,21 @@
+Metronome runs as a single writer. Check the pod's readiness with:
+
+  kubectl --namespace {{ .Release.Namespace }} rollout status deployment/{{ include "metronome.fullname" . }}
+
+Forward the Service locally:
+
+  kubectl --namespace {{ .Release.Namespace }} port-forward svc/{{ include "metronome.fullname" . }} 7340:{{ .Values.service.port }}
+
+{{- if .Values.authProxy.enabled }}
+The Service goes through your authenticating proxy. For the direct readiness check, port-forward
+the Deployment's port 7340 locally and request http://localhost:7340/readyz instead.
+{{- else }}
+Check http://localhost:7340/readyz and open http://localhost:7340/ for the board.
+WARNING: The board and API have no built-in authentication. Keep the Service private.
+{{- end }}
+{{- if eq .Values.database.type "sqlite" }}
+
+For an online SQLite backup (copy the result off the persistent volume):
+
+  kubectl --namespace {{ .Release.Namespace }} exec deployment/{{ include "metronome.fullname" . }} -c metronome -- metronome backup --db /data/metronome.db --to /data/backup.db
+{{- end }}

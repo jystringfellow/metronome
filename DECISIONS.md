@@ -49,8 +49,31 @@ open.
 
 - Whether fencing should exit the process, or startup should wait for the lock for rolling deployments.
 - Whether SQLite should gain a versioned schema, and whether to support PostgreSQL keyword/value DSNs.
-- Whether to change pgx's default TLS mode (`prefer`), support reverse migration to SQLite, or template
-  `--db-env` in the Helm chart.
+- Whether to change pgx's default TLS mode (`prefer`) or support reverse migration to SQLite.
+
+## Agent decision (2026-11-28): the Helm chart
+
+- Deploy one replica with Recreate rather than allowing overlapping writers. Default to PostgreSQL,
+  as decided by the maintainer; use `--db-env METRONOME_DB` from an existing Secret. Fail if it is
+  missing from values. SQLite uses a persistent volume and retains a chart-created PVC on uninstall.
+- Require an explicit image tag or digest, not a rolling tag. Preserve the image entrypoint.
+- Render the versioned config values map to JSON in a ConfigMap, restart on checksum changes, and
+  reference existing Secrets rather than generating them. Do not change events or replay.
+- Default to a private Service and reject ingress without a proxy unless external authentication is
+  acknowledged. The optional proxy-neutral sidecar receives all traffic through the Service;
+  probes still address Metronome directly.
+- Default to restricted security settings and provide emptyDir mounts for HOME and /tmp.
+- Test the documented values using Helm lint and template. Skip when Helm is unavailable locally,
+  but require it in CI with `METRONOME_TEST_HELM=1`.
+- CI runs `helm lint --strict` and `TestHelmChart` with `METRONOME_TEST_HELM=1` in a `helm` job pinned to Helm v4.3.1,
+  added outside the sandbox (2026-11-28). Null or empty map values render as empty maps.
+
+## Open (2026-11-28): Helm chart follow-up
+
+- Whether to publish the chart as OCI to GHCR and version it with the image so appVersion can default the tag.
+- Whether to ship a NetworkPolicy: the direct pod port remains reachable in-cluster even with a proxy.
+- Whether to default to a specific proxy or accept an existing ConfigMap.
+- Whether and how to schedule SQLite backups in-cluster, alongside the existing backup scheduling question.
 
 ## Agent decision (2026-11-28): the container image
 

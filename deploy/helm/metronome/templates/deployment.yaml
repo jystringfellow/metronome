@@ -1,0 +1,150 @@
+{{- include "metronome.validate" . -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "metronome.fullname" . }}
+  labels:
+    {{- include "metronome.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "metronome.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        {{- merge (dict "checksum/config" (include (print $.Template.BasePath "/configmap.yaml") . | sha256sum)) (.Values.podAnnotations | default dict) | toYaml | nindent 8 }}
+      labels:
+        {{- $labels := include "metronome.labels" . | fromYaml }}
+        {{- merge $labels (.Values.podLabels | default dict) | toYaml | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "metronome.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: metronome
+          image: {{ include "metronome.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - serve
+            - --addr
+            - 0.0.0.0:7340
+            - --config
+            - /etc/metronome/instance.json
+            {{- if eq .Values.database.type "postgres" }}
+            - --db-env
+            - METRONOME_DB
+            {{- else }}
+            - --db
+            - /data/metronome.db
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: 7340
+          env:
+            - name: METRONOME_ACTOR
+              value: {{ .Values.actor | quote }}
+            {{- if eq .Values.database.type "postgres" }}
+            - name: METRONOME_DB
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.postgres.existingSecret | quote }}
+                  key: {{ .Values.database.postgres.key | quote }}
+            {{- end }}
+            {{- with .Values.secretEnv }}
+            {{- include "metronome.secretEnv" . | nindent 12 }}
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.envFromSecrets }}
+          envFrom:
+            {{- range . }}
+            - secretRef:
+                name: {{ . | quote }}
+            {{- end }}
+          {{- end }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          startupProbe:
+            {{- toYaml .Values.probes.startup | nindent 12 }}
+          livenessProbe:
+            {{- toYaml .Values.probes.liveness | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.probes.readiness | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/metronome
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+            - name: home
+              mountPath: /home/metronome
+            {{- if eq .Values.database.type "sqlite" }}
+            - name: data
+              mountPath: /data
+            {{- end }}
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+        {{- if .Values.authProxy.enabled }}
+        - name: auth-proxy
+          image: {{ printf "%s:%s" .Values.authProxy.image.repository (toString .Values.authProxy.image.tag) | quote }}
+          imagePullPolicy: {{ .Values.authProxy.image.pullPolicy }}
+          args:
+            {{- toYaml .Values.authProxy.args | nindent 12 }}
+          ports:
+            - name: proxy
+              containerPort: {{ .Values.authProxy.port }}
+          {{- if or .Values.authProxy.env .Values.authProxy.secretEnv }}
+          env:
+            {{- with .Values.authProxy.env }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+            {{- with .Values.authProxy.secretEnv }}
+            {{- include "metronome.secretEnv" . | nindent 12 }}
+            {{- end }}
+          {{- end }}
+          securityContext:
+            {{- toYaml .Values.authProxy.securityContext | nindent 12 }}
+          resources:
+            {{- toYaml .Values.authProxy.resources | nindent 12 }}
+        {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "metronome.fullname" . }}-config
+        - name: tmp
+          emptyDir: {}
+        - name: home
+          emptyDir: {}
+        {{- if eq .Values.database.type "sqlite" }}
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ default (printf "%s-data" (include "metronome.fullname" .)) .Values.database.sqlite.persistence.existingClaim }}
+        {{- end }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

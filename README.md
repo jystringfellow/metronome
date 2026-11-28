@@ -14,6 +14,7 @@ Metronome is a design and an early proof of concept.
 - [docs/operations.md](docs/operations.md): health checks, database backups and restore.
 - [docs/configuration.md](docs/configuration.md): declare workstreams and supervised loops in one file.
 - [docs/container.md](docs/container.md): running and extending the container image.
+- [docs/kubernetes.md](docs/kubernetes.md): deploying the Helm chart with PostgreSQL or SQLite.
 - [docs/releasing.md](docs/releasing.md): publishing and signing releases.
 
 ## What runs today
