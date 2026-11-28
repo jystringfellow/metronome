@@ -89,6 +89,15 @@ func NewEngine(ctx context.Context, cfg Config, store Store, clock func() time.T
 
 func (e *Engine) Config() Config { return e.cfg }
 
+func (e *Engine) LastSeq() int64 {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if len(e.events) == 0 {
+		return 0
+	}
+	return e.events[len(e.events)-1].Seq
+}
+
 func (e *Engine) record(ev Event) {
 	e.byID[ev.ID] = len(e.events)
 	e.events = append(e.events, ev)

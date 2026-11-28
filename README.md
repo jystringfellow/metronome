@@ -11,6 +11,7 @@ Metronome is a design and an early proof of concept.
 - [docs/runners.md](docs/runners.md): how agents take work and hand it back.
 - [docs/backlog.md](docs/backlog.md): the backlog JSON contract.
 - [docs/intake.md](docs/intake.md): writing source commands for scheduled intake and publishing.
+- [docs/operations.md](docs/operations.md): health checks, database backups and restore.
 
 ## What runs today
 
@@ -105,6 +106,9 @@ label using links that update the page address, without changing capacity totals
 work appears before the compact, grouped Ready and shelved backlogs. The page refreshes every few seconds,
 highlights changes, ships inside the binary and changes nothing. The page and API are unauthenticated;
 keep the service on loopback.
+
+For a hosted service, keep the board and API behind an authenticating proxy. See
+[running as a service](docs/operations.md) for probes and online backups.
 
 To wrap a coding agent and keep its lease alive until it finishes:
 

@@ -790,9 +790,26 @@ Agent decisions (2026-11-28):
   later item transitions); intake does not report direct adoptions missing from its source or newly named PRs
   already followed by the item. These observations do not require a human decision.
 
+## Agent decision (2026-11-28): health probes and database backups
+
+- Listen before replay. `/healthz` returns 200 `{"status":"ok"}` without touching the store, so a slow disk
+  does not trigger a liveness restart. `/readyz` returns 503 `{"status":"starting"}` during replay and 200
+  `{"status":"ready","last_seq":N}` after replay and a successful event table read. A failed read returns
+  503 `{"status":"unavailable","error":"..."}`. Other routes return 503 until replay completes.
+- The local CLI uses `VACUUM INTO` for a consistent snapshot without blocking WAL writers, verifies
+  `integrity_check`, and syncs a temporary file before publishing with an atomic hard link. Unlike a rename,
+  the link cannot overwrite a destination created by another backup concurrently. Restore is an offline
+  file swap. There is no HTTP backup endpoint because the unauthenticated API would expose the whole log.
+- No event or schema change; existing logs replay unchanged.
+
 ## Open
 
 Everything section 12 of SPEC.md marks Open or Unverified, plus:
+
+- 2026-11-28: whether `serve` should schedule backups itself, and the retention and off-volume copy policy.
+- 2026-11-28: whether to offer an authenticated backup endpoint once OIDC exists.
+- 2026-11-28: whether readiness should change before shutdown to allow draining, or probes use a separate port.
+- 2026-11-28: whether readiness should check freshness, such as the tick loop's last success.
 
 - 2026-11-28: whether adoption should bypass full Review, whether label removal or PR closure should drop
   adopted items, whether forks allowing maintainer edits can be supported, how to resolve Azure DevOps linked

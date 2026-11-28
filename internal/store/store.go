@@ -22,6 +22,8 @@ type Memory struct {
 
 func NewMemory() *Memory { return &Memory{ids: map[string]bool{}} }
 
+func (m *Memory) Ping(context.Context) error { return nil }
+
 func (m *Memory) Load(context.Context) ([]flow.Event, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -77,6 +79,11 @@ func OpenSQLite(ctx context.Context, path string) (*SQLite, error) {
 }
 
 func (s *SQLite) Close() error { return s.db.Close() }
+
+func (s *SQLite) Ping(ctx context.Context) error {
+	var seq int64
+	return s.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(seq),0) FROM events`).Scan(&seq)
+}
 
 func (s *SQLite) Load(ctx context.Context) ([]flow.Event, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT seq, id, type, at, actor, data FROM events ORDER BY seq`)

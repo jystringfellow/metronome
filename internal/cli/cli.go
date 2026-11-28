@@ -30,7 +30,7 @@ const defaultServer = "http://127.0.0.1:7340"
 const usage = `metronome: a flow record for AI delivery work
 
 Service:
-  serve [--addr 127.0.0.1:7340] [--db metronome.db] [--tick 30s]  also serves a read-only board page at /
+  serve [--addr 127.0.0.1:7340] [--db metronome.db] [--tick 30s]  board at /, probes at /healthz and /readyz
 
 Looking:
   board [--workstream NAME] [--label L] [--json]  limits, usage, items, slices, open runs and asks
@@ -90,6 +90,7 @@ Azure DevOps:
 
 Maintenance:
   tick                            expire leases and asks now
+  backup --to FILE [--db metronome.db]   consistent copy of the database, also while serve runs
 
 Global flags (before the command): --server URL (or METRONOME_URL), --as WHO (or METRONOME_ACTOR),
 --request-id ID to make a command safe to repeat.
@@ -211,6 +212,8 @@ func (a *app) dispatch(ctx context.Context, cmd string, args []string) error {
 	switch cmd {
 	case "serve":
 		return a.serve(ctx, args)
+	case "backup":
+		return a.backup(ctx, args)
 	case "board":
 		return a.board(ctx, args)
 	case "inbox":
@@ -271,16 +274,39 @@ func (a *app) serve(ctx context.Context, args []string) error {
 		return err
 	}
 	defer st.Close()
-	eng, err := flow.NewEngine(ctx, flow.DefaultConfig(), st, nil)
-	if err != nil {
-		return err
-	}
 	ln, err := net.Listen("tcp", *addr)
 	if err != nil {
 		return err
 	}
-	srv := &http.Server{Handler: api.Handler(eng), ReadHeaderTimeout: 10 * time.Second}
+	svc := api.NewService()
+	srv := &http.Server{Handler: svc, ReadHeaderTimeout: 10 * time.Second}
+	served := make(chan error, 1)
+	go func() { served <- srv.Serve(ln) }()
+	shutdownDone := make(chan struct{})
 	go func() {
+		defer close(shutdownDone)
+		<-ctx.Done()
+		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(shutdown); err != nil {
+			_ = srv.Close()
+		}
+	}()
+	defer func() {
+		stop()
+		<-shutdownDone
+	}()
+	fmt.Fprintf(a.out, "metronome serving on http://%s with %s\n", ln.Addr(), *dbPath)
+	eng, err := flow.NewEngine(ctx, flow.DefaultConfig(), st, nil)
+	if err != nil {
+		stop()
+		<-served
+		return err
+	}
+	svc.Ready(eng, st)
+	tickDone := make(chan struct{})
+	go func() {
+		defer close(tickDone)
 		t := time.NewTicker(*tick)
 		defer t.Stop()
 		for {
@@ -294,16 +320,32 @@ func (a *app) serve(ctx context.Context, args []string) error {
 			}
 		}
 	}()
-	go func() {
-		<-ctx.Done()
-		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = srv.Shutdown(shutdown)
-	}()
-	fmt.Fprintf(a.out, "metronome serving on http://%s with %s\n", ln.Addr(), *dbPath)
-	if err := srv.Serve(ln); !errors.Is(err, http.ErrServerClosed) {
+	err = <-served
+	stop()
+	<-tickDone
+	if !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
+	return nil
+}
+
+func (a *app) backup(ctx context.Context, args []string) error {
+	fs := newFlags("backup")
+	dbPath := fs.String("db", "metronome.db", "")
+	dest := fs.String("to", "", "")
+	if err := parse(fs, args, 0); err != nil {
+		return err
+	}
+	if *dest == "" {
+		return usagef("--to FILE is required")
+	}
+	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	result, err := store.Backup(ctx, *dbPath, *dest)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(a.out, "backed up %d events (last seq %d) from %s to %s\n", result.Events, result.LastSeq, *dbPath, *dest)
 	return nil
 }
 
