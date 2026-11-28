@@ -22,3 +22,36 @@ jobs:
       - run: test -z "$(gofmt -l .)"
       - run: go vet ./...
       - run: go test -race ./...
+
+  postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: metronome
+          POSTGRES_PASSWORD: metronome
+          POSTGRES_DB: metronome_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U metronome -d metronome_test"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      METRONOME_TEST_POSTGRES_URL: postgres://metronome:metronome@localhost:5432/metronome_test?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Run the store contract against PostgreSQL
+        run: |
+          set -o pipefail
+          go test -race -count=1 -v ./... 2>&1 | tee test.log
+          if grep -q 'METRONOME_TEST_POSTGRES_URL is not set' test.log; then
+            echo "PostgreSQL tests were skipped" >&2
+            exit 1
+          fi
+          grep -E -- '--- (PASS|FAIL|SKIP): Test(Contract|Postgres|ServePostgres)' test.log
