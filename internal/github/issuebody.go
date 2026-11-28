@@ -1,8 +1,11 @@
 package github
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/jystringfellow/metronome/internal/flow"
 )
 
 var (
@@ -58,6 +61,27 @@ func bodyRef(body string) string {
 	return ""
 }
 
+func isPRLine(line string) bool {
+	key, _, ok := strings.Cut(line, ":")
+	return ok && strings.EqualFold(key, "PR")
+}
+
+func bodyPRs(body string) ([]string, error) {
+	var refs []string
+	for _, line := range bodyLines(body) {
+		if !isPRLine(line) {
+			continue
+		}
+		_, value, _ := strings.Cut(line, ":")
+		repo, number, err := ParsePRRef(strings.TrimSpace(value))
+		if err != nil {
+			return nil, fmt.Errorf("invalid PR: line %q: %w", line, err)
+		}
+		refs = append(refs, FormatPRRef(repo, number))
+	}
+	return flow.NormalisePRs(refs)
+}
+
 func acceptanceSection(lines []string) (int, int) {
 	for index, line := range lines {
 		heading := bodyHeading.FindStringSubmatch(line)
@@ -81,7 +105,7 @@ func bodyIntent(body string) string {
 	var paragraph []string
 	list := false
 	for index, line := range lines {
-		if line == "" || bodyHeading.MatchString(line) || refLine(line) != "" || (index >= start && index < end) || bodyList.MatchString(line) {
+		if line == "" || bodyHeading.MatchString(line) || refLine(line) != "" || isPRLine(line) || (index >= start && index < end) || bodyList.MatchString(line) {
 			if len(paragraph) > 0 {
 				break
 			}
@@ -128,7 +152,7 @@ func bodyCriteria(body string) []string {
 				}
 				criteria = append(criteria, strings.Join(strings.Fields(text), " "))
 			}
-		} else if line == "" || bodyHeading.MatchString(line) || refLine(line) != "" {
+		} else if line == "" || bodyHeading.MatchString(line) || refLine(line) != "" || isPRLine(line) {
 			continuing = false
 		} else if continuing {
 			criteria[len(criteria)-1] += " " + strings.Join(strings.Fields(line), " ")

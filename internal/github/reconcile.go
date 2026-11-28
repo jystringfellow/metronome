@@ -11,14 +11,17 @@ import (
 )
 
 type Action struct {
-	Event     string
-	RequestID string
-	Request   api.GitHubRequest
+	AdoptionText string
+	Event        string
+	RequestID    string
+	Request      api.GitHubRequest
 }
 
 func (a Action) String() string {
 	r := a.Request
 	switch a.Event {
+	case "adopted":
+		return a.AdoptionText
 	case "pr-opened":
 		return fmt.Sprintf("%s pr-opened %s#%d at %s", r.SliceID, r.Repo, r.Number, short(r.HeadSHA))
 	case "checks":

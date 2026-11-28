@@ -48,6 +48,23 @@ func repoBlocks(blocks []block, repo *string) ([]block, error) {
 	return result, nil
 }
 
+func prBlocks(blocks []block, refs *[]string) ([]block, error) {
+	var out []block
+	for _, entry := range blocks {
+		key, value, ok := strings.Cut(entry.text, ":")
+		if !ok || !strings.EqualFold(key, "PR") {
+			out = append(out, entry)
+			continue
+		}
+		repo, number, err := github.ParsePRRef(strings.TrimSpace(value))
+		if err != nil {
+			return nil, err
+		}
+		*refs = append(*refs, github.FormatPRRef(repo, number))
+	}
+	return out, nil
+}
+
 const maxLabels = 20
 
 func Backlog(items []WorkItem, owner string, ready []string) (Result, error) {
@@ -115,6 +132,27 @@ func Backlog(items []WorkItem, owner string, ready []string) (Result, error) {
 		criteria, err := repoBlocks(htmlBlocks(work.AcceptanceCriteria), &repo)
 		if err != nil {
 			problems = append(problems, fmt.Errorf("%s: %w", id, err))
+		}
+		description, err = prBlocks(description, &backlog.PRs)
+		if err != nil {
+			problems = append(problems, fmt.Errorf("%s: %w", id, err))
+		}
+		criteria, err = prBlocks(criteria, &backlog.PRs)
+		if err != nil {
+			problems = append(problems, fmt.Errorf("%s: %w", id, err))
+		}
+		backlog.PRs, err = flow.NormalisePRs(backlog.PRs)
+		if err != nil {
+			problems = append(problems, fmt.Errorf("%s: %w", id, err))
+		}
+		if repo == "" && len(backlog.PRs) > 0 {
+			repo, _, _ = github.ParsePRRef(backlog.PRs[0])
+		}
+		for count := 0; count < work.LinkedPRs; count++ {
+			result.Notes = append(result.Notes, fmt.Sprintf("%s has a linked pull request that Metronome cannot resolve to a repository; add a PR: OWNER/NAME#N line", id))
+		}
+		if work.LinkedPRs > 0 && len(backlog.PRs) == 0 && backlog.ClaimedBy == "" {
+			backlog.ClaimedBy = "linked pull request"
 		}
 		for _, entry := range description {
 			if entry.kind == paragraph {

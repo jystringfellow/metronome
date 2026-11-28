@@ -3,6 +3,7 @@ package github_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -43,6 +44,175 @@ func (f fakeGitHub) PRForBranch(_ context.Context, repo, branch string) (*github
 		return nil, errors.New("gh is not signed in")
 	}
 	return f[repo+" "+branch], nil
+}
+
+type adoptionSource struct {
+	prs   map[int]*github.PullRequest
+	reads map[int]int
+}
+
+func (source *adoptionSource) PR(_ context.Context, repo string, number int) (*github.PullRequest, error) {
+	source.reads[number]++
+	return source.prs[number], nil
+}
+
+func (source *adoptionSource) LabelledPRs(_ context.Context, repo, label string) ([]github.LabelledPR, error) {
+	var out []github.LabelledPR
+	for _, pr := range source.prs {
+		if pr.Repo == repo && pr.State == github.PROpen && slices.Contains(pr.Labels, label) {
+			out = append(out, github.LabelledPR{Number: pr.Number, CrossRepository: pr.CrossRepository, Labels: pr.Labels})
+		}
+	}
+	return out, nil
+}
+
+func openAdoptionPR(number int, labels ...string) *github.PullRequest {
+	return &github.PullRequest{Snapshot: github.Snapshot{Repo: "acme/app", Number: number, HeadSHA: "abc", State: github.PROpen, HeadChecks: github.ChecksSuccess}, Title: "Export", Author: "pat", HeadRepo: "acme/app", HeadRef: fmt.Sprintf("feature-%d", number), Labels: labels}
+}
+
+func adoptionPoller(t *testing.T, source *adoptionSource) (*flow.Engine, *countingTransport, func() github.PollResult) {
+	t.Helper()
+	eng, err := flow.NewEngine(t.Context(), flow.DefaultConfig(), store.NewMemory(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport := &countingTransport{handlerTransport: handlerTransport{api.Handler(eng)}}
+	poller := github.Poller{Client: &api.Client{BaseURL: "http://metronome.test", Actor: "github", HTTP: &http.Client{Transport: transport}}, Source: fakeGitHub{}, Adopt: source, AdoptRepos: []string{"acme/app"}}
+	poll := func() github.PollResult {
+		t.Helper()
+		result, err := poller.Once(t.Context())
+		if err != nil || len(result.Errors) > 0 {
+			t.Fatal(result, err)
+		}
+		return result
+	}
+	return eng, transport, poll
+}
+
+func TestLabelAdoptionRefusesForkAndAmbiguity(t *testing.T) {
+	fork := openAdoptionPR(12, "adopt")
+	fork.CrossRepository = true
+	fork.HeadRepo = "other/app"
+	ambiguous := openAdoptionPR(13, "adopt", "example-adopt")
+	source := &adoptionSource{prs: map[int]*github.PullRequest{12: fork, 13: ambiguous}, reads: map[int]int{}}
+	eng, transport, poll := adoptionPoller(t, source)
+	result, err := eng.CreateWorkstream(t.Context(), "pat", "", "example", flow.PartialLimits{})
+	must(t, result, err)
+	result, err = eng.SetAdoptLabel(t.Context(), "pat", "", "default", "adopt")
+	must(t, result, err)
+	result, err = eng.SetAdoptLabel(t.Context(), "pat", "", "example", "example-adopt")
+	must(t, result, err)
+	res := pollWithoutWrites(t, eng, transport, poll)
+	notes := strings.Join(res.Notes, "\n")
+	if !strings.Contains(notes, "acme/app#12 is labelled adopt but comes from a fork") || !strings.Contains(notes, "acme/app#13 has multiple workstream adoption labels") || len(source.reads) != 0 {
+		t.Fatal(res, source.reads)
+	}
+}
+
+func TestLabelAdoptionLifecycleAndCapacity(t *testing.T) {
+	pr := openAdoptionPR(12, "adopt")
+	source := &adoptionSource{prs: map[int]*github.PullRequest{12: pr}, reads: map[int]int{}}
+	eng, transport, poll := adoptionPoller(t, source)
+	ctx := t.Context()
+	result, err := eng.SetWorkstreamLimits(ctx, "pat", "", "default", flow.PartialLimits{Review: intp(1)})
+	must(t, result, err)
+	result, err = eng.SetAdoptLabel(ctx, "pat", "", "default", "adopt")
+	must(t, result, err)
+	wantRecorded(t, poll(), "adopted", "checks", "ready-for-review")
+	pollWithoutWrites(t, eng, transport, poll)
+	pr.HeadChecks = github.ChecksFailure
+	wantRecorded(t, poll(), "checks")
+	if sl := slice(t, eng); sl.Status != flow.SliceStalled || !sl.Rework || sl.HoldsExecute || !sl.HoldsReview {
+		t.Fatal(sl)
+	}
+	result, err = eng.Claim(ctx, "agent", "", "example", "default", "I1.1")
+	must(t, result, err)
+	claim, ok := flow.ClaimFrom(result)
+	if !ok {
+		t.Fatal(result)
+	}
+	result, err = eng.Submit(ctx, "agent", "", claim.RunID, pr.HeadRef)
+	must(t, result, err)
+	pr.HeadSHA = "def"
+	pr.HeadChecks = github.ChecksSuccess
+	wantRecorded(t, poll(), "pr-opened", "checks", "ready-for-review")
+	if sl := slice(t, eng); sl.Status != flow.SliceInReview || sl.PR.HeadSHA != "def" || sl.HoldsExecute || sl.Rework {
+		t.Fatal(sl)
+	}
+	pr.Reviews = []github.Review{{ID: "review-1", Author: "sam", State: github.ReviewApproved, CommitSHA: "def", SubmittedAt: time.Now()}}
+	wantRecorded(t, poll(), "approved")
+	if sl := slice(t, eng); sl.Status != flow.SliceApproved || sl.PR.ApprovedSHA != "def" {
+		t.Fatal(sl)
+	}
+	pr.HeadSHA = "ghi"
+	wantRecorded(t, poll(), "pr-opened", "checks", "ready-for-review")
+	if sl := slice(t, eng); sl.Status != flow.SliceInReview || sl.PR.ApprovedSHA != "" {
+		t.Fatal(sl)
+	}
+	pr.Reviews = append(pr.Reviews, github.Review{ID: "review-2", Author: "sam", State: github.ReviewApproved, CommitSHA: "ghi", SubmittedAt: time.Now().Add(time.Second)})
+	wantRecorded(t, poll(), "approved")
+	pr.State = github.PRMerged
+	pr.MergedBy = "pat"
+	wantRecorded(t, poll(), "merged")
+	eng.View(func(s *flow.State) {
+		if it := s.Items["I1"]; it.Status != flow.ItemDone || s.StageUsage("default") != (flow.StageUsage{}) {
+			t.Fatal(it, s.Usage())
+		}
+	})
+	pollWithoutWrites(t, eng, transport, poll)
+}
+
+func TestLabelAdoptionWaitsForReviewCapacity(t *testing.T) {
+	first := openAdoptionPR(12, "adopt")
+	source := &adoptionSource{prs: map[int]*github.PullRequest{12: first}, reads: map[int]int{}}
+	eng, _, poll := adoptionPoller(t, source)
+	result, err := eng.SetWorkstreamLimits(t.Context(), "pat", "", "default", flow.PartialLimits{Review: intp(1)})
+	must(t, result, err)
+	result, err = eng.SetAdoptLabel(t.Context(), "pat", "", "default", "adopt")
+	must(t, result, err)
+	wantRecorded(t, poll(), "adopted", "checks", "ready-for-review")
+	second := openAdoptionPR(13, "adopt")
+	source.prs[13] = second
+	res := poll()
+	wantRecorded(t, res)
+	if !strings.Contains(strings.Join(res.Notes, "\n"), "Review in workstream default is at its limit of 1; acme/app#13 waits to be adopted") {
+		t.Fatal(res)
+	}
+	first.State = github.PRMerged
+	first.MergedBy = "pat"
+	wantRecorded(t, poll(), "merged")
+	wantRecorded(t, poll(), "adopted", "checks", "ready-for-review")
+	eng.View(func(s *flow.State) {
+		if s.Items["I1"].Status != flow.ItemDone || s.Slices["I2.1"].PR.Number != 13 || s.StageUsage("default").Review != 1 {
+			t.Fatal(s.Usage())
+		}
+	})
+}
+
+func TestSourceAdoptionRefusesFollowedForkAndAmbiguity(t *testing.T) {
+	known := openAdoptionPR(12, "adopt")
+	fork := openAdoptionPR(13)
+	fork.HeadRepo = "other/app"
+	source := &adoptionSource{prs: map[int]*github.PullRequest{12: known, 13: fork, 14: openAdoptionPR(14), 15: openAdoptionPR(15)}, reads: map[int]int{}}
+	eng, transport, poll := adoptionPoller(t, source)
+	result, err := eng.SetAdoptLabel(t.Context(), "pat", "", "default", "adopt")
+	must(t, result, err)
+	wantRecorded(t, poll(), "adopted", "checks", "ready-for-review")
+	items := []flow.BacklogItem{{Ref: "ACME-1", Title: "Known", Owner: "sam", PRs: []string{"acme/app#12"}}, {Ref: "ACME-2", Title: "Fork", Owner: "sam", PRs: []string{"acme/app#13"}}, {Ref: "ACME-3", Title: "Ambiguous", Owner: "sam", PRs: []string{"acme/app#14", "acme/app#15"}}}
+	result, err = eng.IntakeBacklog(t.Context(), "sam", "", "default", items)
+	must(t, result, err)
+	res := pollWithoutWrites(t, eng, transport, poll)
+	notes := strings.Join(res.Notes, "\n")
+	for _, want := range []string{"acme/app#12, which slice I1.1 already follows", "acme/app#13 comes from a fork", "names 2 open PRs"} {
+		if !strings.Contains(notes, want) {
+			t.Fatal(res)
+		}
+	}
+	eng.View(func(s *flow.State) {
+		if len(s.Items) != 4 || s.StageUsage("default").Ready != 3 || len(s.Slices) != 1 {
+			t.Fatal(s.Usage())
+		}
+	})
 }
 
 func must(t *testing.T, _ flow.Result, err error) {

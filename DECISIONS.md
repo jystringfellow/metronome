@@ -762,7 +762,7 @@ Choices made while building step 1 where SPEC.md was silent. Each is easy to cha
   enforced, because a person can mark a PR ready on GitHub at any time.
 - **An approval must name the PR's current head SHA,** or it is refused as stale. A moved head withdraws the
   approval, per the decision of 2026-11-27.
-- **The expedite slot and untracked-PR adoption are not built yet.**
+- **The expedite slot is not built yet.** Untracked PR adoption is implemented (2026-11-28).
 - **The GitHub poller is level-triggered.** `metronome github poll` compares what GitHub shows now for each
   submitted slice's branch with what Metronome has recorded, and records only what differs, through the same API
   calls a person would make. Each slice carries a version that every event on it raises, and request IDs combine
@@ -789,9 +789,62 @@ Choices made while building step 1 where SPEC.md was silent. Each is easy to cha
 - 2026-11-26: the `codex`, `copilot` and `agy` command-line tools are installed alongside Claude Code. Each one's
   hook, MCP and background-session support has not been checked yet.
 
+## PR adoption (2026-11-28)
+
+Maintainer decisions (2026-11-27 and slice criteria): adopt existing PRs once through a workstream label,
+`github adopt`, or a source item naming a PR; new items belong to the adopting workstream and are owned
+by the author. Normal review rules apply. Forks are refused (narrowing SPEC section 8's never-rejected rule).
+Prefer the only non-draft open PR when a source names several, and report ambiguity. Rework runners update
+the shared branch before working and ask if that cannot be done cleanly.
+
+Agent decisions (2026-11-28):
+
+- Record adoption in one additive `pr_adopted` event, using the existing Ready item ID for source adoption,
+  because prior events require a run to record a branch. The slice holds Review at `pr_open`; green checks
+  and a non-draft PR are still required to enter `in_review`. New work waits when Review is full.
+- Skip plan approval because the work already exists; use the source tier or a PR's `tier:N` label (default 1).
+  New items rank after existing work. Keep the source item's owner, recording PR authorship separately.
+- Store the workstream adoption label with a separate event; opt into repository discovery with `--adopt-repo`
+  rather than searching other people's repositories. Removing a label does not stop existing tracking.
+- Use a per-item `prs` list so the poller can choose from current PR facts. Never plan Ready items naming PRs.
+  Intake may update references only on Ready items, preserving work already in progress.
+- Expose the adopted PR in `slice.adopted` and require the recorded branch on submit, because the service cannot
+  inspect a runner's checkout. Follow the specific PR number rather than guessing from a reused branch name.
+- Engine PR uniqueness plus request IDs make retrying safe. Reuse issue body parsing for PR criteria.
+- Add an `adopted` publisher transition, mapped to In progress; set the claim marker without assigning the issue.
+  Since adoption immediately tracks a PR, do not raise an extra untracked ask as described in SPEC section 8.
+- Azure DevOps GitHub ArtifactLink connection-to-repository resolution is Unverified. Report the link and
+  ask for a `PR:` line rather than guessing its repository.
+- Agent decision (2026-11-28 review): keep unresolved linked-PR items out of fresh planning by marking them
+  claimed when no explicit PR reference exists. Skip direct PR references in the issue publisher (including
+  later item transitions); intake does not report direct adoptions missing from its source or newly named PRs
+  already followed by the item. These observations do not require a human decision.
+
+## Agent decision (2026-11-28): health probes and database backups
+
+- Listen before replay. `/healthz` returns 200 `{"status":"ok"}` without touching the store, so a slow disk
+  does not trigger a liveness restart. `/readyz` returns 503 `{"status":"starting"}` during replay and 200
+  `{"status":"ready","last_seq":N}` after replay and a successful event table read. A failed read returns
+  503 `{"status":"unavailable","error":"..."}`. Other routes return 503 until replay completes.
+- The local CLI uses `VACUUM INTO` for a consistent snapshot without blocking WAL writers, verifies
+  `integrity_check`, and syncs a temporary file before publishing with an atomic hard link. Unlike a rename,
+  the link cannot overwrite a destination created by another backup concurrently. Restore is an offline
+  file swap. There is no HTTP backup endpoint because the unauthenticated API would expose the whole log.
+- No event or schema change; existing logs replay unchanged.
+
 ## Open
 
 Everything section 12 of SPEC.md marks Open or Unverified, plus:
+
+- 2026-11-28: whether `serve` should schedule backups itself, and the retention and off-volume copy policy.
+- 2026-11-28: whether to offer an authenticated backup endpoint once OIDC exists.
+- 2026-11-28: whether readiness should change before shutdown to allow draining, or probes use a separate port.
+- 2026-11-28: whether readiness should check freshness, such as the tick loop's last success.
+
+- 2026-11-28: whether adoption should bypass full Review, whether label removal or PR closure should drop
+  adopted items, whether forks allowing maintainer edits can be supported, how to resolve Azure DevOps linked
+  PR repositories, whether intake should change PR references after Ready, and whether adopted items need
+  an untracked ask.
 
 - 2026-11-28: whether a flagged slice should also return to review on a green push.
 - 2026-11-28: whether to use the push or timeline actor instead of the head commit author for the pusher.

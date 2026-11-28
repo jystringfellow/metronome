@@ -11,6 +11,7 @@ Metronome is a design and an early proof of concept.
 - [docs/runners.md](docs/runners.md): how agents take work and hand it back.
 - [docs/backlog.md](docs/backlog.md): the backlog JSON contract.
 - [docs/intake.md](docs/intake.md): writing source commands for scheduled intake and publishing.
+- [docs/operations.md](docs/operations.md): health checks, database backups and restore.
 - [docs/container.md](docs/container.md): running and extending the container image.
 - [docs/releasing.md](docs/releasing.md): publishing and signing releases.
 
@@ -22,6 +23,13 @@ replays it. `metronome github poll` reads each submitted slice's PR through `gh`
 the PR opening, checks on its head, review and merge. It also returns a slice waiting for rework to review
 when its recorded PR gets a new green head outside a run. The same events can still be entered by hand
 (`metronome github …`, including `metronome github rework-fixed`).
+
+Adopt an existing same-repository PR with `metronome github adopt acme/app#12 --workstream default`, or
+configure `metronome workstream set default --adopt-label metronome:adopt` and run
+`metronome github poll --adopt-repo acme/app`. A Ready source item naming a PR via a `PR:` line or linked
+GitHub PR is also adopted by the poller instead of planned. Adoption reserves Review capacity, follows the
+PR's own branch, and is idempotent. Forks are refused. Rework runners update the shared branch first;
+see [adopted PRs](docs/runners.md#adopted-prs).
 
 Each item belongs to one workstream, with independent Ready, Plan, Execute, Review and Release limits.
 The approver cap remains global per person. Existing logs and backlog syncs without a workstream use
@@ -100,6 +108,9 @@ label using links that update the page address, without changing capacity totals
 work appears before the compact, grouped Ready and shelved backlogs. The page refreshes every few seconds,
 highlights changes, ships inside the binary and changes nothing. The page and API are unauthenticated;
 keep the service on loopback or behind an authenticating proxy.
+
+For a hosted service, keep the board and API behind an authenticating proxy. See
+[running as a service](docs/operations.md) for probes and online backups.
 
 To wrap a coding agent and keep its lease alive until it finishes:
 

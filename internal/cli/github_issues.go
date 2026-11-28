@@ -54,6 +54,10 @@ func (a *app) githubIssues(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	linked, err := a.issues.LinkedPRs(ctx, *repo, *label)
+	if err != nil {
+		return err
+	}
 	var ranks map[int]float64
 	if projectSet {
 		ranks, err = a.issues.ProjectRanks(ctx, selected, *field, *repo)
@@ -61,7 +65,7 @@ func (a *app) githubIssues(ctx context.Context, args []string) error {
 			return err
 		}
 	}
-	items, err := github.IssueBacklog(*repo, strings.TrimSpace(*owner), issues, ranks, *instance)
+	items, err := github.IssueBacklog(*repo, strings.TrimSpace(*owner), issues, ranks, *instance, linked)
 	if err != nil {
 		return err
 	}

@@ -12,6 +12,7 @@ import (
 )
 
 type BacklogItem struct {
+	PRs           []string    `json:"prs,omitempty"`
 	Ref           string      `json:"ref"`
 	Title         string      `json:"title"`
 	Intent        string      `json:"intent"`
@@ -81,14 +82,19 @@ func (e *Engine) SyncBacklog(ctx context.Context, actor, requestID, workstream s
 			return errUnknown("workstream", workstream)
 		}
 		known := map[string]bool{}
+		byRef := map[string]*Item{}
 		for _, it := range d.s.Items {
 			known[it.Ref] = true
+			byRef[it.Ref] = it
 		}
 		items, err := normaliseBacklog(items)
 		if err != nil {
 			return err
 		}
 		for _, bi := range items {
+			if it := byRef[bi.Ref]; it != nil {
+				d.notePRDifferences(it, bi)
+			}
 			if bi.ClaimedBy != "" {
 				d.note("%s is claimed by %s in the source; skipped", bi.Ref, bi.ClaimedBy)
 				known[bi.Ref] = true
@@ -159,6 +165,14 @@ func normaliseBacklog(items []BacklogItem) ([]BacklogItem, error) {
 		}
 		sort.Strings(labels)
 		items[i].Labels = labels
+		prs, err := NormalisePRs(bi.PRs)
+		if err != nil {
+			return nil, err
+		}
+		if len(prs) > 0 && (len(bi.Slices) > 1 || (len(bi.Slices) == 1 && len(bi.Slices[0].After) > 0)) {
+			return nil, fail(CodeInvalid, "backlog item %q names PRs and must have at most one slice without dependencies", bi.Ref)
+		}
+		items[i].PRs = prs
 	}
 	return items, nil
 }
@@ -172,6 +186,7 @@ func (d *decider) addBacklogItem(workstream string, bi BacklogItem, rank int) {
 		Workstream: workstream,
 		ItemID:     d.nextItemID(), Ref: bi.Ref, Title: bi.Title, Intent: bi.Intent, Owner: bi.Owner,
 		Labels: bi.Labels,
+		PRs:    bi.PRs,
 		Value:  bi.Value, PredictedTier: tier, Rank: rank,
 		Slices: bi.Slices, TierDefaulted: bi.PredictedTier == nil,
 	})
@@ -212,6 +227,7 @@ func (e *Engine) IntakeBacklog(ctx context.Context, actor, requestID, workstream
 			var bi BacklogItem
 			if rank != 0 {
 				bi = items[rank-1]
+				d.notePRDifferences(it, bi)
 			}
 			switch it.Status {
 			case ItemReady:
@@ -225,13 +241,13 @@ func (e *Engine) IntakeBacklog(ctx context.Context, actor, requestID, workstream
 					d.note("%s (%s) is claimed by %s in the source; shelved", it.Ref, it.ID, bi.ClaimedBy)
 					ready--
 				default:
-					if it.Rank != rank || it.Title != bi.Title || it.Intent != bi.Intent || !slices.Equal(it.Labels, bi.Labels) {
-						d.emit(EvItemUpdated, itemUpdated{ItemID: it.ID, Rank: rank, Title: bi.Title, Intent: bi.Intent, Labels: bi.Labels})
+					if it.Rank != rank || it.Title != bi.Title || it.Intent != bi.Intent || !slices.Equal(it.Labels, bi.Labels) || !slices.Equal(it.PRs, bi.PRs) {
+						d.emit(EvItemUpdated, itemUpdated{ItemID: it.ID, Rank: rank, Title: bi.Title, Intent: bi.Intent, Labels: bi.Labels, PRs: bi.PRs})
 					}
 					d.noteBacklogDifferences(it, bi)
 				}
 			case ItemPlanning, ItemExecuting, ItemAwaitingRelease, ItemReleasing:
-				if rank == 0 {
+				if rank == 0 && !d.directlyAdopted(it) {
 					d.note("%s (%s, %s) is no longer in the source; Metronome keeps it; a person must decide", it.Ref, it.ID, it.Status)
 				} else if bi.ClaimedBy != "" {
 					d.note("%s (%s, %s) is claimed by %s in the source but held here; a person must decide", it.Ref, it.ID, it.Status, bi.ClaimedBy)
@@ -260,7 +276,7 @@ func (e *Engine) IntakeBacklog(ctx context.Context, actor, requestID, workstream
 			if it == nil {
 				d.addBacklogItem(workstream, bi, i+1)
 			} else {
-				d.emit(EvItemRestored, itemUpdated{ItemID: it.ID, Rank: i + 1, Title: bi.Title, Intent: bi.Intent, Labels: bi.Labels})
+				d.emit(EvItemRestored, itemUpdated{ItemID: it.ID, Rank: i + 1, Title: bi.Title, Intent: bi.Intent, Labels: bi.Labels, PRs: bi.PRs})
 				d.noteBacklogDifferences(it, bi)
 			}
 			ready++
@@ -281,8 +297,46 @@ func (d *decider) noteBacklogDifferences(it *Item, bi BacklogItem) {
 		return left.Title == right.Title && left.Repo == right.Repo && slices.Equal(left.Criteria, right.Criteria) && slices.Equal(left.Approvers, right.Approvers) && slices.Equal(left.After, right.After)
 	})
 	if it.Owner != bi.Owner || it.Value != bi.Value || it.PredictedTier != tier || it.TierDefaulted != (bi.PredictedTier == nil) || !sameSlices {
-		d.note("%s (%s): the source changed owner, value, tier or slices; intake updates only rank, title, intent and labels", it.Ref, it.ID)
+		d.note("%s (%s): the source changed owner, value, tier or slices; intake updates only rank, title, intent and labels, plus PR references", it.Ref, it.ID)
 	}
+}
+
+func (d *decider) notePRDifferences(it *Item, bi BacklogItem) {
+	switch it.Status {
+	case ItemPlanning, ItemExecuting, ItemAwaitingRelease, ItemReleasing:
+	default:
+		return
+	}
+	refs := slices.DeleteFunc(slices.Clone(bi.PRs), func(ref string) bool {
+		if slices.Contains(it.PRs, ref) {
+			return false
+		}
+		for _, id := range it.Slices {
+			if pr := d.s.Slices[id].PR; pr != nil && strings.EqualFold(ref, fmt.Sprintf("%s#%d", pr.Repo, pr.Number)) {
+				return true
+			}
+		}
+		return false
+	})
+	if !slices.Equal(it.PRs, refs) {
+		text := strings.Join(bi.PRs, ", ")
+		if text == "" {
+			text = "none"
+		}
+		d.note("%s (%s, %s): the source names PRs %s; intake updates PRs only on Ready items; a person must decide", it.Ref, it.ID, it.Status, text)
+	}
+}
+
+func (d *decider) directlyAdopted(it *Item) bool {
+	if len(it.PRs) > 0 {
+		return false
+	}
+	for _, id := range it.Slices {
+		if pr := d.s.Slices[id].Adopted; pr != nil && strings.EqualFold(it.Ref, fmt.Sprintf("%s#%d", pr.Repo, pr.Number)) {
+			return true
+		}
+	}
+	return false
 }
 
 func (e *Engine) StartPlan(ctx context.Context, actor, requestID, workstream, itemID string) (Result, error) {
@@ -301,6 +355,9 @@ func (e *Engine) StartPlan(ctx context.Context, actor, requestID, workstream, it
 		if itemID == "" {
 			var firstErr error
 			for _, candidate := range d.s.readyItemsByPriority() {
+				if len(candidate.PRs) > 0 {
+					continue
+				}
 				if workstream != "" && candidate.Workstream != workstream {
 					continue
 				}
@@ -329,6 +386,9 @@ func (e *Engine) StartPlan(ctx context.Context, actor, requestID, workstream, it
 			}
 			if it.Status != ItemReady {
 				return fail(CodeConflict, "item %s is %s, not ready", it.ID, it.Status)
+			}
+			if len(it.PRs) > 0 {
+				return fail(CodeConflict, "item %s names PR %s; github poll adopts it rather than planning fresh work", it.ID, strings.Join(it.PRs, ", "))
 			}
 			if err := fits(it); err != nil {
 				return err
@@ -678,6 +738,9 @@ func (e *Engine) Submit(ctx context.Context, actor, requestID, runID, branch str
 		}
 		if branch == "" {
 			return fail(CodeInvalid, "submit needs the branch the work will be shipped to")
+		}
+		if adopted := d.s.Slices[r.SliceID].Adopted; adopted != nil && branch != adopted.Branch {
+			return fail(CodeConflict, "slice %s follows adopted PR %s#%d; push to and submit branch %s", r.SliceID, adopted.Repo, adopted.Number, adopted.Branch)
 		}
 		d.emit(EvRunClosed, runClosed{RunID: r.ID, Reason: CloseSubmitted, Branch: branch})
 		return nil

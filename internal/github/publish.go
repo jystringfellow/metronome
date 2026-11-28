@@ -29,12 +29,12 @@ type ProjectBoard interface {
 }
 
 func DefaultMapping() map[string]string {
-	return map[string]string{"planning": "Ready", "ready": "Ready", "claimed": "In progress", "submitted": "In progress", "pr_open": "In progress", "rework": "In progress", "in_review": "In review", "approved": "In review", "done": "Done"}
+	return map[string]string{"planning": "Ready", "ready": "Ready", "claimed": "In progress", "adopted": "In progress", "submitted": "In progress", "pr_open": "In progress", "rework": "In progress", "in_review": "In review", "approved": "In review", "done": "Done"}
 }
 
 func KnownTransition(name string) bool {
 	switch name {
-	case "planning", "ready", "executing", "awaiting_release", "releasing", "done", "dropped", "claimed", "submitted", "pr_open", "in_review", "approved", "merged", "rework", "stalled", "parked", "flagged", "asked", "answered", "ask_timed_out":
+	case "planning", "ready", "executing", "awaiting_release", "releasing", "done", "dropped", "claimed", "adopted", "submitted", "pr_open", "in_review", "approved", "merged", "rework", "stalled", "parked", "flagged", "asked", "answered", "ask_timed_out":
 		return true
 	}
 	return false
@@ -192,6 +192,8 @@ func (g GH) Publish(ctx context.Context, options PublishOptions, input io.Reader
 		}
 		if issue == nil {
 			fmt.Fprintf(notes, "%s: no unique project issue; skipped\n", record.Ref)
+		} else if issue.IsPullRequest {
+			fmt.Fprintf(notes, "%s: pull request, not a source issue; skipped\n", record.Ref)
 		} else {
 			ref := strings.ToLower(issue.ref())
 			entry := state.Issues[ref]
@@ -220,7 +222,7 @@ func (g GH) Publish(ctx context.Context, options PublishOptions, input io.Reader
 func (g GH) publishRecord(ctx context.Context, options PublishOptions, board projectBoard, issue *projectIssue, entry *publishedIssue, record flow.Transition, created map[string]bool, save func() error, out, notes io.Writer) error {
 	endpoint := issue.endpoint()
 	label := claimPrefix + options.Instance
-	if record.Transition == "claimed" {
+	if record.Transition == "claimed" || record.Transition == "adopted" {
 		if !includesFold(issue.Labels, label) {
 			if !created[issue.Repo] {
 				if _, err := g.call(ctx, "label", "create", label, "--repo", issue.Repo, "--force", "--color", "BFDADC", "--description", "Claimed by Metronome instance "+options.Instance); err != nil {
@@ -234,7 +236,7 @@ func (g GH) publishRecord(ctx context.Context, options PublishOptions, board pro
 			issue.Labels = append(issue.Labels, label)
 			fmt.Fprintf(out, "claimed %s\n", issue.ref())
 		}
-		if !includesFold(issue.Assignees, options.Assignee) {
+		if record.Transition == "claimed" && !includesFold(issue.Assignees, options.Assignee) {
 			if _, err := g.call(ctx, "api", "-X", "POST", endpoint+"/assignees", "-f", "assignees[]="+options.Assignee); err != nil {
 				return err
 			}

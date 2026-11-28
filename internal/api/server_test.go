@@ -60,6 +60,27 @@ func TestUnknownRunHistory(t *testing.T) {
 	}
 }
 
+func TestAdoptionAPI(t *testing.T) {
+	server := testServer(t, store.NewMemory())
+	client := api.Client{BaseURL: server.URL, HTTP: server.Client(), Actor: "pat"}
+	err := client.Post(t.Context(), "/v1/github/adopt", "", map[string]any{"unknown": true}, nil)
+	var status *api.StatusError
+	if !errors.As(err, &status) || status.Code != http.StatusBadRequest || !strings.Contains(err.Error(), "unknown field") {
+		t.Fatal(err)
+	}
+	var result flow.Result
+	if err := client.Post(t.Context(), "/v1/workstreams/default/adopt-label", "", api.AdoptLabelRequest{Label: "adopt"}, &result); err != nil || len(result.Events) != 1 || result.Events[0].Type != flow.EvWorkstreamAdoptLabelSet {
+		t.Fatal(result, err)
+	}
+	if err := client.Post(t.Context(), "/v1/github/adopt", "", api.AdoptRequest{Repo: "acme/app", Number: 12, HeadRepo: "acme/app", Branch: "feature-x", HeadSHA: "abc", Author: "pat", Title: "Export"}, &result); err != nil || len(result.Events) != 1 || result.Events[0].Type != flow.EvPRAdopted {
+		t.Fatal(result, err)
+	}
+	var board api.Board
+	if err := client.Get(t.Context(), "/v1/board", &board); err != nil || board.Workstreams[0].AdoptLabel != "adopt" || board.Slices[0].Adopted.Number != 12 {
+		t.Fatal(board, err)
+	}
+}
+
 func TestRunLookup(t *testing.T) {
 	ctx := context.Background()
 	eng, err := flow.NewEngine(ctx, flow.DefaultConfig(), store.NewMemory(), nil)
