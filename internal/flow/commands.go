@@ -31,9 +31,11 @@ type workstreamLimits struct {
 
 var workstreamName = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
 
+func ValidWorkstreamName(name string) bool { return workstreamName.MatchString(name) }
+
 func (e *Engine) CreateWorkstream(ctx context.Context, actor, requestID, name string, limits PartialLimits) (Result, error) {
 	return e.execute(ctx, actor, requestID, func(d *decider) error {
-		if !workstreamName.MatchString(name) {
+		if !ValidWorkstreamName(name) {
 			return fail(CodeInvalid, "invalid workstream name %q", name)
 		}
 		if d.s.Workstreams[name] != nil {

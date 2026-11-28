@@ -5,6 +5,9 @@ board and API behind an authenticating proxy; probes can reach the service direc
 
 ## Probes
 
+For a hosted instance, use `metronome serve --config instance.json` with a database on persistent storage
+and an authenticating proxy in front of the service. See [instance configuration](configuration.md).
+
 The probes use the service address and return JSON with `Cache-Control: no-store`.
 
 ```sh
@@ -52,3 +55,6 @@ Use the actual backup filename and choose a fresh replacement directory if `repl
 In a separate terminal, check `curl -s http://127.0.0.1:7340/readyz` once replay finishes. The returned
 `last_seq` should match the sequence reported by the backup command. Resume the intake, publish and poll
 loops after verifying the restore.
+
+For a configuration-managed instance, verify the restore without `--config` first, then stop and restart
+with `--config` to resume the loops.
