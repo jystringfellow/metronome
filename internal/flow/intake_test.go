@@ -187,6 +187,98 @@ func TestIntakeRefusesInvalidSourcesAtomically(t *testing.T) {
 	wantCode(t, err, flow.CodeNotFound)
 }
 
+func TestIntakeUpdatesAndRestoresPRReferences(t *testing.T) {
+	h := newHarness(t, nil)
+	items := sourceItems(1)
+	h.intake(items...)
+	items[0].PRs = []string{"ACME/app#12", "acme/app#12"}
+	wantEventTypes(t, h.intake(items...), flow.EvItemUpdated)
+	if got := h.item("I1").PRs; !reflect.DeepEqual(got, []string{"acme/app#12"}) {
+		t.Fatal(got)
+	}
+	wantEventTypes(t, h.intake(items...))
+	h.intake()
+	items[0].PRs = []string{"acme/app#13"}
+	wantEventTypes(t, h.intake(items...), flow.EvItemRestored)
+	h.eng = h.reload()
+	if got := h.item("I1").PRs; !reflect.DeepEqual(got, items[0].PRs) {
+		t.Fatal(got)
+	}
+	items[0].PRs = nil
+	wantEventTypes(t, h.intake(items...), flow.EvItemUpdated)
+	if len(h.item("I1").PRs) != 0 {
+		t.Fatal(h.item("I1"))
+	}
+}
+
+func TestIntakePRDifferencesOnlyForActiveItems(t *testing.T) {
+	h := newHarness(t, nil)
+	items := sourceItems(1)
+	h.intake(items...)
+	h.ok(h.eng.StartPlan(ctx(), "pat", "", "default", "I1"))
+	items[0].PRs = []string{"acme/app#12"}
+	check := func(want string) {
+		t.Helper()
+		for _, result := range []flow.Result{h.intake(items...), h.ok(h.eng.SyncBacklog(ctx(), "pat", "", "default", items))} {
+			if want == "" {
+				if len(result.Notes) != 0 {
+					t.Fatal(result)
+				}
+			} else {
+				wantNote(t, result, want)
+			}
+		}
+	}
+	check("the source names PRs acme/app#12")
+	h.ok(h.eng.DropPlan(ctx(), "pat", "", "I1"))
+	check("")
+	h = newHarness(t, nil)
+	h.intake(items...)
+	req := adoption()
+	req.ItemID = "I1"
+	h.ok(h.eng.AdoptPR(ctx(), "github", "", req))
+	items[0].PRs = nil
+	check("the source names PRs none")
+	h.ok(h.eng.ChecksCompleted(ctx(), "github", "", "I1.1", "abc", true))
+	h.ok(h.eng.ReadyForReview(ctx(), "github", "", "I1.1"))
+	h.ok(h.eng.PRMerged(ctx(), "github", "", "I1.1", "pat"))
+	if h.item("I1").Status != flow.ItemDone {
+		t.Fatal(h.item("I1"))
+	}
+	check("")
+}
+
+func TestIntakeDoesNotReportDirectAdoptionMissing(t *testing.T) {
+	h := newHarness(t, nil)
+	h.ok(h.eng.AdoptPR(ctx(), "github", "", adoption()))
+	for _, result := range []flow.Result{h.intake(), h.intake(sourceItems(1)...), h.intake(sourceItems(1)...)} {
+		if len(result.Notes) != 0 {
+			t.Fatal(result)
+		}
+	}
+	h.eng = h.reload()
+	if result := h.intake(sourceItems(1)...); len(result.Notes) != 0 {
+		t.Fatal(result)
+	}
+}
+
+func TestIntakeIgnoresPRsAlreadyFollowedByTheItem(t *testing.T) {
+	h := newHarness(t, nil)
+	items := sourceItems(1)
+	h.intake(items...)
+	h.approvedItemAt("I1", 1, 1)
+	claim := h.claim("example")
+	h.toReview(claim.SliceID)
+	items[0].PRs = []string{"acme/app#10"}
+	for _, result := range []flow.Result{h.intake(items...), h.ok(h.eng.SyncBacklog(ctx(), "pat", "", "default", items))} {
+		if len(result.Notes) != 0 || len(result.Events) != 0 {
+			t.Fatal(result)
+		}
+	}
+	items[0].PRs = append(items[0].PRs, "acme/app#12")
+	wantNote(t, h.intake(items...), "the source names PRs acme/app#10, acme/app#12")
+}
+
 func TestIntakeSkipsRefsOfOtherWorkstreams(t *testing.T) {
 	h := newHarness(t, nil)
 	h.workstream("example", flow.PartialLimits{})

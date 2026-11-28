@@ -135,7 +135,10 @@ func ParsePRList(repo string, data []byte) (*Snapshot, error) {
 		}
 		return prs[i].UpdatedAt.After(prs[j].UpdatedAt)
 	})
-	p := prs[0]
+	return snapshotOf(repo, prs[0]), nil
+}
+
+func snapshotOf(repo string, p ghPR) *Snapshot {
 	snap := &Snapshot{Repo: repo, Number: p.Number, HeadSHA: p.HeadRefOid, Draft: p.IsDraft, State: p.State, HeadChecks: ChecksNone}
 	if p.MergedBy != nil {
 		snap.MergedBy = p.MergedBy.Login
@@ -174,7 +177,7 @@ func ParsePRList(repo string, data []byte) (*Snapshot, error) {
 	for _, r := range latest {
 		snap.HeadChecks = worse(snap.HeadChecks, r.result)
 	}
-	return snap, nil
+	return snap
 }
 
 func checkResult(typename, status, conclusion, state string) Checks {

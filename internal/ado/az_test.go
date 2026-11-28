@@ -45,6 +45,13 @@ func TestParseWorkItems(t *testing.T) {
 	}
 }
 
+func TestParseWorkItemPRLinks(t *testing.T) {
+	items, err := ParseWorkItems([]byte(`{"count":1,"value":[{"id":1,"fields":{"System.Title":"Export","System.State":"New"},"relations":[{"rel":"ArtifactLink","url":"vstfs:///GitHub/PullRequest/example%2F12","attributes":{"name":"GitHub Pull Request"}},{"rel":"ArtifactLink","url":"vstfs:///Git/PullRequestId/example%2F13","attributes":{"name":"Pull Request"}},{"rel":"ArtifactLink","url":"https://example.com/commit","attributes":{"name":"Commit"}}]}]}`))
+	if err != nil || len(items) != 1 || items[0].LinkedPRs != 2 {
+		t.Fatal(items, err)
+	}
+}
+
 func TestAZArgumentsAndCleanup(t *testing.T) {
 	const org = "https://dev.azure.com/example"
 	const project = "acme"

@@ -61,6 +61,28 @@ func TestBacklogLiteralAnglesAndRepo(t *testing.T) {
 	}
 }
 
+func TestBacklogPRReferences(t *testing.T) {
+	work := WorkItem{ID: 1, Title: "Export", State: "New", Description: "<p>PR: https://github.com/acme/app/pull/12</p><p>Export records</p>", AcceptanceCriteria: "<p>PR: acme/app#13</p><p>CSV</p>", LinkedPRs: 1}
+	result, err := Backlog([]WorkItem{work}, "pat", []string{"New"})
+	if err != nil || len(result.Items) != 1 {
+		t.Fatal(result, err)
+	}
+	item := result.Items[0]
+	if !reflect.DeepEqual(item.PRs, []string{"acme/app#12", "acme/app#13"}) || item.Intent != "Export records" || item.Slices[0].Repo != "acme/app" || !reflect.DeepEqual(item.Slices[0].Criteria, []string{"CSV"}) || item.ClaimedBy != "" || !strings.Contains(strings.Join(result.Notes, " "), "cannot resolve") {
+		t.Fatal(result)
+	}
+	work.Description = "Export records"
+	work.AcceptanceCriteria = "CSV"
+	result, err = Backlog([]WorkItem{work}, "pat", []string{"New"})
+	if err != nil || len(result.Items) != 1 || result.Items[0].ClaimedBy != "linked pull request" || !strings.Contains(strings.Join(result.Notes, " "), "add a PR:") {
+		t.Fatal(result, err)
+	}
+	work.Description = "PR: bad"
+	if _, err := Backlog([]WorkItem{work}, "pat", []string{"New"}); err == nil {
+		t.Fatal("expected invalid PR")
+	}
+}
+
 func TestBacklogErrors(t *testing.T) {
 	items := []WorkItem{{ID: 1, State: "New", Tags: []string{"tier:9"}}, {ID: 2, Title: "Export", State: "New", Tags: []string{"tier:1", "tier:2"}, Description: "Repo: acme/app\nRepo: acme/other"}, {ID: 3, Title: "Import", State: "New", Description: "Repo: bad"}}
 	_, err := Backlog(items, "", []string{"New"})

@@ -60,7 +60,8 @@ metronome next --runner laptop --json
     "repo": "acme/app",
     "title": "Export records",
     "criteria": ["Records can be saved as a file"],
-    "approvers": []
+    "approvers": [],
+    "adopted": null
   },
   "item": {
     "id": "I1",
@@ -86,6 +87,7 @@ metronome next --runner laptop --json
 - `claim`: the run ID for reporting, asking, submitting or dropping, the slice ID and the lease deadline
   (RFC 3339 in UTC).
 - `slice`: the work to deliver, its repository, title, acceptance criteria and named approvers.
+  `adopted` is `null` for fresh work, or an object with `repo`, `number`, `branch` and `author` for an adopted PR.
 - `item`: the parent item's ID, backlog reference, title, intent and labels.
 - `history`: a snapshot of why the slice is claimable, its rework status, previous run and recorded branch
   and PR, and answered asks. It is fixed at claim time, including when a claim is repeated with the same request ID.
@@ -187,6 +189,9 @@ A person or service runs the GitHub poller, with `gh` signed in:
 metronome --as github github poll --every 1m
 ```
 
+Pass `--adopt-repo OWNER/NAME` (repeatable) to discover open PRs with configured workstream adoption labels.
+The poller also adopts PRs named by Ready source items without this flag.
+
 Without `--every`, the poller runs once. It follows the PR on the submitted branch and records the PR opening,
 checks on its head, review and merge. A change request that sends the slice back to Execute makes it available
 for another claim as rework. The new brief identifies who requested changes in `history.changes_requested_by`.
@@ -197,6 +202,16 @@ person pushes a fix, returns to review without a runner and is no longer claimab
 head commit's author as the pusher when available. Running rework is unaffected: the runner must still push
 and submit. If a run closes by drop or lease expiry after pushing a green head, the poller may return the
 slice to review.
+
+## Adopted PRs
+
+An adopted slice follows a PR someone else opened, and others may keep pushing to its branch. On a rework
+claim, read `slice.adopted` and fetch the latest commits on its recorded branch before changing code.
+Bring your checkout up to date with those commits without losing anyone's work or force-pushing. If you
+cannot do this cleanly (including a missing branch, divergent local work or a conflict), raise an ask and
+stop; do not start on another branch. Push to and submit the recorded branch. If the remote has advanced
+again before pushing, update cleanly again or ask and stop. The brief reports the adopted branch and the
+engine refuses a submit naming a different branch.
 
 ## Wrap an agent with `metronome run`
 

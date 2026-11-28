@@ -24,9 +24,14 @@ const issuesJSON = `[
 
 const projectJSON = `{"data":{"repositoryOwner":{"projectV2":{"field":{"__typename":"ProjectV2Field","dataType":"NUMBER"},"items":{"pageInfo":{"hasNextPage":false},"nodes":[{"content":{"__typename":"Issue","number":2,"repository":{"nameWithOwner":"acme/app"}},"fieldValueByName":{"__typename":"ProjectV2ItemFieldNumberValue","number":1}}]}}}}}`
 
+const linkedJSON = `{"data":{"repository":{"issues":{"pageInfo":{"hasNextPage":false},"nodes":[{"number":2,"closedByPullRequestsReferences":{"totalCount":1,"nodes":[{"number":12,"repository":{"nameWithOwner":"acme/app"}}]}}]}}}}`
+
 func TestGitHubIssuesIntakeSkipsForeignClaim(t *testing.T) {
 	e := newEnv(t)
 	gh := github.GH{Run: func(_ context.Context, args ...string) ([]byte, error) {
+		if args[1] == "graphql" {
+			return []byte(linkedJSON), nil
+		}
 		if len(args) != 3 || args[0] != "api" || args[1] != "--paginate" {
 			t.Fatal(args)
 		}
@@ -51,6 +56,9 @@ func TestGitHubIssuesPrintsABacklogForIntake(t *testing.T) {
 	gh := github.GH{Run: func(_ context.Context, args ...string) ([]byte, error) {
 		calls = append(calls, args)
 		if args[1] == "graphql" {
+			if strings.Contains(args[4], "closedByPullRequestsReferences") {
+				return []byte(linkedJSON), nil
+			}
 			return []byte(projectJSON), nil
 		}
 		return []byte(issuesJSON), nil
@@ -70,7 +78,7 @@ func TestGitHubIssuesPrintsABacklogForIntake(t *testing.T) {
 	if items[0].Ref != "MET-17" || items[1].Ref != "acme/app#1" || items[0].Owner != "rev" || items[1].Owner != "pat" || items[0].PredictedTier == nil || *items[0].PredictedTier != 0 || !reflect.DeepEqual(items[0].Slices[0].Criteria, []string{"CSV with headers"}) {
 		t.Fatal(items)
 	}
-	if len(calls) != 2 || !reflect.DeepEqual(calls[0], []string{"api", "--paginate", "repos/acme/app/issues?direction=asc&labels=metronome&per_page=100&sort=created&state=open"}) || len(calls[1]) != 11 || !reflect.DeepEqual(calls[1][:4], []string{"api", "graphql", "--paginate", "-f"}) || !strings.HasPrefix(calls[1][4], "query=") || !reflect.DeepEqual(calls[1][5:], []string{"-f", "owner=acme", "-F", "number=3", "-f", "field=Rank"}) {
+	if len(calls) != 3 || !reflect.DeepEqual(calls[0], []string{"api", "--paginate", "repos/acme/app/issues?direction=asc&labels=metronome&per_page=100&sort=created&state=open"}) || len(calls[2]) != 11 || !reflect.DeepEqual(calls[2][:4], []string{"api", "graphql", "--paginate", "-f"}) || !strings.HasPrefix(calls[2][4], "query=") || !reflect.DeepEqual(calls[2][5:], []string{"-f", "owner=acme", "-F", "number=3", "-f", "field=Rank"}) || !reflect.DeepEqual(items[0].PRs, []string{"acme/app#12"}) {
 		t.Fatal(calls)
 	}
 	file := filepath.Join(e.dir, "issues.json")
@@ -105,6 +113,9 @@ func TestGitHubIssuesWithoutProjectAndFailures(t *testing.T) {
 			calls := 0
 			gh := github.GH{Run: func(_ context.Context, args ...string) ([]byte, error) {
 				calls++
+				if args[1] == "graphql" {
+					return []byte(linkedJSON), nil
+				}
 				if args[1] != "--paginate" {
 					t.Fatal(args)
 				}
@@ -115,7 +126,7 @@ func TestGitHubIssuesWithoutProjectAndFailures(t *testing.T) {
 			}}
 			var out, stderr bytes.Buffer
 			code := cli.RunWithDeps(context.Background(), []string{"github", "issues", "--repo", "acme/app", "--owner", test.owner}, &out, &stderr, cli.Deps{Issues: gh})
-			if calls != 1 {
+			if (test.failure && calls != 1) || (!test.failure && calls != 2) {
 				t.Fatal(calls)
 			}
 			if test.message != "" {
@@ -161,7 +172,7 @@ func TestGitHubIssuesUsage(t *testing.T) {
 
 func TestGitHubIssuesRunsGHFromPath(t *testing.T) {
 	dir := t.TempDir()
-	script := "#!/bin/sh\ncase \"$2\" in\n  graphql) test \"${11}\" = field=Rank || exit 1; printf '%s\\n' '" + projectJSON + "';;\n  --paginate) printf '%s\\n' '" + issuesJSON + "';;\n  *) exit 1;;\nesac\n"
+	script := "#!/bin/sh\ncase \"$2\" in\n  graphql) if [ \"${11}\" = field=Rank ]; then printf '%s\\n' '" + projectJSON + "'; else printf '%s\\n' '" + linkedJSON + "'; fi;;\n  --paginate) printf '%s\\n' '" + issuesJSON + "';;\n  *) exit 1;;\nesac\n"
 	if err := os.WriteFile(filepath.Join(dir, "gh"), []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}

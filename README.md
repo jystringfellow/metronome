@@ -21,6 +21,13 @@ the PR opening, checks on its head, review and merge. It also returns a slice wa
 when its recorded PR gets a new green head outside a run. The same events can still be entered by hand
 (`metronome github …`, including `metronome github rework-fixed`).
 
+Adopt an existing same-repository PR with `metronome github adopt acme/app#12 --workstream default`, or
+configure `metronome workstream set default --adopt-label metronome:adopt` and run
+`metronome github poll --adopt-repo acme/app`. A Ready source item naming a PR via a `PR:` line or linked
+GitHub PR is also adopted by the poller instead of planned. Adoption reserves Review capacity, follows the
+PR's own branch, and is idempotent. Forks are refused. Rework runners update the shared branch first;
+see [adopted PRs](docs/runners.md#adopted-prs).
+
 Each item belongs to one workstream, with independent Ready, Plan, Execute, Review and Release limits.
 The approver cap remains global per person. Existing logs and backlog syncs without a workstream use
 `default`. A zero stage limit prevents new slot allocations in that stage; existing slots stay held.

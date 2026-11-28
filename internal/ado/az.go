@@ -27,6 +27,7 @@ type Source interface {
 }
 
 type WorkItem struct {
+	LinkedPRs                                                 int
 	ID                                                        int
 	Title, State, AssignedTo, Description, AcceptanceCriteria string
 	Rank                                                      *float64
@@ -131,7 +132,10 @@ func ParseWorkItems(data []byte) ([]WorkItem, error) {
 				StackRank          *float64                                  `json:"Microsoft.VSTS.Common.StackRank"`
 				Tags               string                                    `json:"System.Tags"`
 			} `json:"fields"`
-			Relations []struct{ Rel, URL string } `json:"relations"`
+			Relations []struct {
+				Rel, URL   string
+				Attributes struct{ Name string }
+			} `json:"relations"`
 		} `json:"value"`
 	}
 	if err := json.Unmarshal(data, &result); err != nil {
@@ -165,6 +169,9 @@ func ParseWorkItems(data []byte) ([]WorkItem, error) {
 			}
 		}
 		for _, rel := range raw.Relations {
+			if rel.Rel == "ArtifactLink" && (rel.Attributes.Name == "GitHub Pull Request" || rel.Attributes.Name == "Pull Request") {
+				item.LinkedPRs++
+			}
 			if rel.Rel != "System.LinkTypes.Dependency-Reverse" {
 				continue
 			}

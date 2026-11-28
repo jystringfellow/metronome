@@ -23,6 +23,7 @@ const projectPublishQuery = `query($owner: String!, $number: Int!, $field: Strin
 }`
 
 type projectIssue struct {
+	IsPullRequest                 bool
 	ID, Repo, Body, Status, State string
 	Number                        int
 	Assignees, Labels             []string
@@ -170,9 +171,10 @@ func (g GH) getIssue(ctx context.Context, repo string, number int) (*projectIssu
 	if err := json.Unmarshal(data, &response); err != nil {
 		return nil, err
 	}
-	if response.Number != number || response.PullRequest != nil || !strings.EqualFold(response.State, "open") && !strings.EqualFold(response.State, "closed") {
+	if response.Number != number || !strings.EqualFold(response.State, "open") && !strings.EqualFold(response.State, "closed") {
 		return nil, fmt.Errorf("invalid issue response for %s", issue.ref())
 	}
+	issue.IsPullRequest = response.PullRequest != nil
 	issue.State, issue.Body = response.State, response.Body
 	for _, a := range response.Assignees {
 		issue.Assignees = append(issue.Assignees, a.Login)

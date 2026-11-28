@@ -99,6 +99,12 @@ type GitHubRequest struct {
 	By      string `json:"by"`
 }
 
+type AdoptRequest = flow.Adoption
+
+type AdoptLabelRequest struct {
+	Label string `json:"label"`
+}
+
 type server struct {
 	eng *flow.Engine
 }
@@ -138,6 +144,9 @@ func Handler(eng *flow.Engine) http.Handler {
 	}))
 	mux.HandleFunc("POST /v1/workstreams/{name}/limits", command(func(r *http.Request, c call, req flow.PartialLimits) (flow.Result, error) {
 		return eng.SetWorkstreamLimits(r.Context(), c.actor, c.requestID, r.PathValue("name"), req)
+	}))
+	mux.HandleFunc("POST /v1/workstreams/{name}/adopt-label", command(func(r *http.Request, c call, req AdoptLabelRequest) (flow.Result, error) {
+		return eng.SetAdoptLabel(r.Context(), c.actor, c.requestID, r.PathValue("name"), req.Label)
 	}))
 	mux.HandleFunc("GET /v1/inbox/{owner}", s.inbox)
 	mux.HandleFunc("GET /v1/events", s.events)
@@ -188,6 +197,9 @@ func Handler(eng *flow.Engine) http.Handler {
 	}))
 	mux.HandleFunc("POST /v1/runs/{id}/release", command(func(r *http.Request, c call, _ struct{}) (flow.Result, error) {
 		return eng.ReleaseRun(r.Context(), c.actor, c.requestID, r.PathValue("id"))
+	}))
+	mux.HandleFunc("POST /v1/github/adopt", command(func(r *http.Request, c call, req AdoptRequest) (flow.Result, error) {
+		return eng.AdoptPR(r.Context(), c.actor, c.requestID, req)
 	}))
 	mux.HandleFunc("POST /v1/github/{event}", command(func(r *http.Request, c call, req GitHubRequest) (flow.Result, error) {
 		ctx := r.Context()

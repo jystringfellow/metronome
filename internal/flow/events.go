@@ -17,36 +17,38 @@ type Event struct {
 }
 
 const (
-	EvWorkstreamCreated   = "workstream_created"
-	EvWorkstreamLimitsSet = "workstream_limits_set"
-	EvItemAdded           = "item_added"
-	EvItemUpdated         = "item_updated"
-	EvItemShelved         = "item_shelved"
-	EvItemRestored        = "item_restored"
-	EvPlanStarted         = "plan_started"
-	EvPlanProposed        = "plan_proposed"
-	EvPlanApproved        = "plan_approved"
-	EvPlanDropped         = "plan_dropped"
-	EvItemParked          = "item_parked"
-	EvFlagRaised          = "flag_raised"
-	EvFlagResolved        = "flag_resolved"
-	EvFlagTimedOut        = "flag_timed_out"
-	EvSliceClaimed        = "slice_claimed"
-	EvHeartbeat           = "heartbeat"
-	EvRunClosed           = "run_closed"
-	EvSliceParked         = "slice_parked"
-	EvPROpened            = "pr_opened"
-	EvChecksCompleted     = "checks_completed"
-	EvPRReadyForReview    = "pr_ready_for_review"
-	EvPRApproved          = "pr_approved"
-	EvApprovalWithdrawn   = "approval_withdrawn"
-	EvPRChangesRequested  = "pr_changes_requested"
-	EvReworkFixed         = "rework_fixed"
-	EvItemAwaitsRelease   = "item_awaits_release"
-	EvReleaseSlotTaken    = "release_slot_taken"
-	EvPRMerged            = "pr_merged"
-	EvItemDone            = "item_done"
-	EvReleaseDone         = "release_done"
+	EvPRAdopted               = "pr_adopted"
+	EvWorkstreamAdoptLabelSet = "workstream_adopt_label_set"
+	EvWorkstreamCreated       = "workstream_created"
+	EvWorkstreamLimitsSet     = "workstream_limits_set"
+	EvItemAdded               = "item_added"
+	EvItemUpdated             = "item_updated"
+	EvItemShelved             = "item_shelved"
+	EvItemRestored            = "item_restored"
+	EvPlanStarted             = "plan_started"
+	EvPlanProposed            = "plan_proposed"
+	EvPlanApproved            = "plan_approved"
+	EvPlanDropped             = "plan_dropped"
+	EvItemParked              = "item_parked"
+	EvFlagRaised              = "flag_raised"
+	EvFlagResolved            = "flag_resolved"
+	EvFlagTimedOut            = "flag_timed_out"
+	EvSliceClaimed            = "slice_claimed"
+	EvHeartbeat               = "heartbeat"
+	EvRunClosed               = "run_closed"
+	EvSliceParked             = "slice_parked"
+	EvPROpened                = "pr_opened"
+	EvChecksCompleted         = "checks_completed"
+	EvPRReadyForReview        = "pr_ready_for_review"
+	EvPRApproved              = "pr_approved"
+	EvApprovalWithdrawn       = "approval_withdrawn"
+	EvPRChangesRequested      = "pr_changes_requested"
+	EvReworkFixed             = "rework_fixed"
+	EvItemAwaitsRelease       = "item_awaits_release"
+	EvReleaseSlotTaken        = "release_slot_taken"
+	EvPRMerged                = "pr_merged"
+	EvItemDone                = "item_done"
+	EvReleaseDone             = "release_done"
 )
 
 const (
@@ -57,6 +59,7 @@ const (
 )
 
 type itemAdded struct {
+	PRs           []string    `json:"prs,omitempty"`
 	Workstream    string      `json:"workstream,omitempty"`
 	ItemID        string      `json:"item_id"`
 	Ref           string      `json:"ref"`
@@ -76,6 +79,7 @@ type itemRef struct {
 }
 
 type itemUpdated struct {
+	PRs    []string `json:"prs,omitempty"`
 	ItemID string   `json:"item_id"`
 	Rank   int      `json:"rank"`
 	Title  string   `json:"title"`
@@ -200,6 +204,31 @@ func (s *State) Apply(e Event) error {
 
 func (s *State) apply(e Event) error {
 	switch e.Type {
+	case EvWorkstreamAdoptLabelSet:
+		var p adoptLabelSet
+		if err := json.Unmarshal(e.Data, &p); err != nil {
+			return err
+		}
+		ws := s.Workstreams[p.Workstream]
+		if ws == nil {
+			return errUnknown("workstream", p.Workstream)
+		}
+		ws.AdoptLabel = p.Label
+	case EvPRAdopted:
+		var p prAdopted
+		if err := json.Unmarshal(e.Data, &p); err != nil {
+			return err
+		}
+		it := s.Items[p.ItemID]
+		if it == nil {
+			it = &Item{ID: p.ItemID, Workstream: p.Workstream, Ref: p.Ref, Title: p.Title, Intent: p.Intent, Owner: p.Owner, Rank: p.Rank, TierDefaulted: p.TierDefaulted, AddedAt: e.At, Labels: []string{}, Slices: []string{}}
+			s.Items[it.ID] = it
+		} else if it.Status != ItemReady {
+			return fail(CodeConflict, "item %s is not ready", it.ID)
+		}
+		it.Status, it.ConfirmedTier, it.PredictedTier, it.Front = ItemExecuting, p.ConfirmedTier, p.ConfirmedTier, false
+		s.Slices[p.SliceID] = &Slice{ID: p.SliceID, ItemID: it.ID, Workstream: it.Workstream, Seq: 1, Title: p.SliceTitle, Repo: p.Repo, Criteria: p.Criteria, Approvers: p.Approvers, Status: SlicePROpen, HoldsReview: true, Branch: p.Branch, Version: 1, PR: &PR{Repo: p.Repo, Number: p.Number, HeadSHA: p.HeadSHA}, Adopted: &AdoptedPR{Repo: p.Repo, Number: p.Number, Branch: p.Branch, Author: p.Author}}
+		it.Slices = append(it.Slices, p.SliceID)
 	case EvPublisherAdvanced:
 		var p publisherAdvanced
 		if err := json.Unmarshal(e.Data, &p); err != nil {
@@ -244,6 +273,7 @@ func (s *State) apply(e Event) error {
 			Workstream: p.Workstream,
 			ID:         p.ItemID, Ref: p.Ref, Title: p.Title, Intent: p.Intent, Owner: p.Owner,
 			Labels: append([]string{}, p.Labels...),
+			PRs:    slices.Clone(p.PRs),
 			Value:  p.Value, PredictedTier: p.PredictedTier, Rank: p.Rank,
 			PlannedSlices: p.Slices, TierDefaulted: p.TierDefaulted,
 			Status: ItemReady, AddedAt: e.At, Slices: []string{},
@@ -266,6 +296,7 @@ func (s *State) apply(e Event) error {
 		}
 		it.Rank, it.Title, it.Intent = p.Rank, p.Title, p.Intent
 		it.Labels = append([]string{}, p.Labels...)
+		it.PRs = slices.Clone(p.PRs)
 		it.Status, it.ShelvedReason, it.ClaimedBy = ItemReady, "", ""
 	case EvItemShelved:
 		var p itemShelved
