@@ -19,11 +19,16 @@ Metronome is a design and an early proof of concept.
 ## What runs today
 
 Build step 1 of the SPEC: one `metronome` binary holding an HTTP service, a CLI and an append-only
-event log in SQLite. Items, slices, runs, slots and asks are all derived from the log, so restarting the service
+event log in SQLite or PostgreSQL. Items, slices, runs, slots and asks are all derived from the log, so restarting the service
 replays it. `metronome github poll` reads each submitted slice's PR through `gh` and records what GitHub shows:
 the PR opening, checks on its head, review and merge. It also returns a slice waiting for rework to review
 when its recorded PR gets a new green head outside a run. The same events can still be entered by hand
 (`metronome github …`, including `metronome github rework-fixed`).
+
+SQLite is the default for a laptop or a single small host and remains fully supported. PostgreSQL is the
+recommended default for hosted instances. Choose a file path or PostgreSQL URL with `serve --db`, or read the
+value from an environment variable with `--db-env NAME`. Run one writer per instance; PostgreSQL enforces
+this with an advisory lock. See [operations](docs/operations.md) for migration, backups and restore.
 
 Adopt an existing same-repository PR with `metronome github adopt acme/app#12 --workstream default`, or
 configure `metronome workstream set default --adopt-label metronome:adopt` and run

@@ -33,14 +33,17 @@ func (m *Memory) Load(context.Context) ([]flow.Event, error) {
 func (m *Memory) Append(_ context.Context, events []flow.Event) ([]flow.Event, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	seen := make(map[string]bool, len(events))
 	for _, ev := range events {
-		if m.ids[ev.ID] {
+		if m.ids[ev.ID] || seen[ev.ID] {
 			return nil, fmt.Errorf("%w: %s", ErrDuplicateID, ev.ID)
 		}
+		seen[ev.ID] = true
 	}
 	out := make([]flow.Event, len(events))
 	for i, ev := range events {
 		ev.Seq = int64(len(m.events) + 1)
+		ev.At = ev.At.UTC()
 		m.ids[ev.ID] = true
 		m.events = append(m.events, ev)
 		out[i] = ev

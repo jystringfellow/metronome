@@ -32,7 +32,8 @@ const defaultServer = "http://127.0.0.1:7340"
 const usage = `metronome: a flow record for AI delivery work
 
 Service:
-  serve [--addr 127.0.0.1:7340] [--db metronome.db] [--tick 30s] [--config FILE]  board at /, probes at /healthz and /readyz
+  serve [--addr 127.0.0.1:7340] [--db metronome.db | --db-env NAME] [--tick 30s] [--config FILE]  board at /, probes at /healthz and /readyz
+                         a postgres:// URL selects PostgreSQL
 
 Looking:
   board [--workstream NAME] [--label L] [--json]  limits, usage, items, slices, open runs and asks
@@ -92,7 +93,8 @@ Azure DevOps:
 
 Maintenance:
   tick                            expire leases and asks now
-  backup --to FILE [--db metronome.db]   consistent copy of the database, also while serve runs
+  backup --to FILE [--db metronome.db | --db-env NAME]   consistent SQLite copy, also while serve runs
+  migrate-store --from FILE (--to URL | --to-env NAME)  copy SQLite events to PostgreSQL and verify replay
 
 Global flags (before the command): --server URL (or METRONOME_URL), --as WHO (or METRONOME_ACTOR),
 --request-id ID to make a command safe to repeat.
@@ -216,6 +218,8 @@ func (a *app) dispatch(ctx context.Context, cmd string, args []string) error {
 		return a.serve(ctx, args)
 	case "backup":
 		return a.backup(ctx, args)
+	case "migrate-store":
+		return a.migrateStore(ctx, args)
 	case "board":
 		return a.board(ctx, args)
 	case "inbox":
@@ -265,9 +269,14 @@ func (a *app) serve(ctx context.Context, args []string) error {
 	fs := newFlags("serve")
 	addr := fs.String("addr", "127.0.0.1:7340", "")
 	dbPath := fs.String("db", "metronome.db", "")
+	dbEnv := fs.String("db-env", "", "")
 	tick := fs.Duration("tick", 30*time.Second, "")
 	configPath := fs.String("config", "", "")
 	if err := parse(fs, args, 0); err != nil {
+		return err
+	}
+	db, err := resolveDB(fs, "db", *dbPath, "db-env", *dbEnv)
+	if err != nil {
 		return err
 	}
 	var cfg instance.Config
@@ -283,7 +292,7 @@ func (a *app) serve(ctx context.Context, args []string) error {
 	}
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	st, err := store.OpenSQLite(ctx, *dbPath)
+	st, description, err := openEventStore(ctx, db)
 	if err != nil {
 		return err
 	}
@@ -318,9 +327,9 @@ func (a *app) serve(ctx context.Context, args []string) error {
 		local.out, local.errOut = synchronizedOutputs(a.out, a.errOut)
 		a = &local
 		loops = a.instanceLoops(cfg)
-		fmt.Fprintf(a.out, "metronome serving on http://%s with %s; config %s: %d workstream(s), %d loop(s)\n", ln.Addr(), *dbPath, *configPath, len(cfg.Workstreams), len(loops))
+		fmt.Fprintf(a.out, "metronome serving on http://%s with %s; config %s: %d workstream(s), %d loop(s)\n", ln.Addr(), description, *configPath, len(cfg.Workstreams), len(loops))
 	} else {
-		fmt.Fprintf(a.out, "metronome serving on http://%s with %s\n", ln.Addr(), *dbPath)
+		fmt.Fprintf(a.out, "metronome serving on http://%s with %s\n", ln.Addr(), description)
 	}
 	eng, err := flow.NewEngine(ctx, flow.DefaultConfig(), st, nil)
 	if err != nil {
@@ -370,6 +379,7 @@ func (a *app) serve(ctx context.Context, args []string) error {
 func (a *app) backup(ctx context.Context, args []string) error {
 	fs := newFlags("backup")
 	dbPath := fs.String("db", "metronome.db", "")
+	dbEnv := fs.String("db-env", "", "")
 	dest := fs.String("to", "", "")
 	if err := parse(fs, args, 0); err != nil {
 		return err
@@ -377,13 +387,23 @@ func (a *app) backup(ctx context.Context, args []string) error {
 	if *dest == "" {
 		return usagef("--to FILE is required")
 	}
-	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	result, err := store.Backup(ctx, *dbPath, *dest)
+	db, err := resolveDB(fs, "db", *dbPath, "db-env", *dbEnv)
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(a.out, "backed up %d events (last seq %d) from %s to %s\n", result.Events, result.LastSeq, *dbPath, *dest)
+	if isPostgres(db) {
+		return usagef("backup copies SQLite databases; back up PostgreSQL with the database's own tools (point-in-time restore or pg_dump)")
+	}
+	if err := validateSQLitePath(db); err != nil {
+		return err
+	}
+	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	result, err := store.Backup(ctx, db, *dest)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(a.out, "backed up %d events (last seq %d) from %s to %s\n", result.Events, result.LastSeq, db, *dest)
 	return nil
 }
 

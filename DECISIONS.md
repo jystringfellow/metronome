@@ -5,11 +5,51 @@ open.
 
 ## Decided by the maintainer (2026-11-28): hosted shadow mode
 
-- Run one server with SQLite on a persistent volume, the workstreams' intake and publish loops and
+- Run one server with its event store (see the PostgreSQL store decision), the workstreams' intake and publish loops and
   GitHub poller alongside it, and an authenticating proxy in front of the board. No laptop writers yet;
   OIDC and runner tokens come later.
 - Publish a generic image and Helm chart in the public repository. Organisations extend the image
   with FROM and keep their own tools, values and infrastructure elsewhere.
+
+## Decided by the maintainer (2026-11-28): the PostgreSQL store
+
+- PostgreSQL is the recommended default for hosted instances. SQLite remains the default for a laptop or
+  a single small host and remains fully supported. Operators choose by `--db`; PostgreSQL is not required.
+- One writer per instance, enforced for PostgreSQL by an advisory lock. Several replicas are out of scope.
+
+## Agent decision (2026-11-28): implementing the PostgreSQL store
+
+- Use pure-Go pgx v5, an actively maintained driver that preserves static builds. Use one dedicated
+  `pgx.Conn`, not a pool or `database/sql` adapter, to keep reads and writes on the advisory-lock session.
+- Version the PostgreSQL schema independently of SQLite. Keep timestamps as RFC3339Nano text and payloads
+  as bytea, preserving exact timestamps and payload bytes. Allocate explicit, gapless sequences inside
+  the append transaction instead of using an identity sequence that can leave gaps after rollback.
+  Check for foreign event tables before DDL and create the initial schema in one transaction.
+- Hash the current schema name into the advisory lock key; PostgreSQL scopes the lock to the database.
+  Explicitly unlock before disconnecting so an immediate restart need not wait for backend teardown.
+  Reconnect on lost connections, reacquire the lock, and fence permanently if the lock is held by another
+  writer, the log has moved or the schema/version changed. A fenced process needs a restart and replay.
+  Bound service appends to 30 seconds independently of the caller's cancellation to avoid interrupting
+  a commit when a caller disconnects.
+- Accept `--db-env` as an alternative to `--db` for credentials without command-line exposure. Never print
+  the URL, user credentials, query parameters or arbitrary driver/server error text; describe the database
+  and host, and report safe error categories and SQLSTATE when available. Backup remains SQLite-only.
+  Reject unsupported or mistyped connection strings instead of interpreting them as SQLite file paths.
+- `migrate-store` requires an existing gapless SQLite log and an empty or exactly matching prefix in the
+  destination. Copy the suffix transactionally, verify every event and replay both logs, and refuse to
+  report success if the source grew. The source stays read-only. Bulk migration honors caller cancellation
+  without a fixed transaction timeout.
+- Run the same store contract for memory, SQLite and PostgreSQL, including intra-batch duplicate refusal.
+  PostgreSQL integration tests use isolated schemas in `METRONOME_TEST_POSTGRES_URL` and explicitly skip
+  when it is unset.
+
+## Open (2026-11-28): PostgreSQL store follow-up
+
+- Whether to add a PostgreSQL service to CI (the maintainer installs workflows).
+- Whether fencing should exit the process, or startup should wait for the lock for rolling deployments.
+- Whether SQLite should gain a versioned schema, and whether to support PostgreSQL keyword/value DSNs.
+- Whether to change pgx's default TLS mode (`prefer`), support reverse migration to SQLite, or template
+  `--db-env` in the Helm chart.
 
 ## Agent decision (2026-11-28): the container image
 

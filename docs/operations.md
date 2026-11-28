@@ -1,7 +1,49 @@
 # Running Metronome as a service
 
-Run one `metronome serve` instance with the SQLite database on persistent storage. Keep the unauthenticated
+Run one `metronome serve` instance with PostgreSQL or a SQLite database on persistent storage. Keep the unauthenticated
 board and API behind an authenticating proxy; probes can reach the service directly.
+
+PostgreSQL is recommended for hosted instances. SQLite remains the fully supported default for a laptop
+or single small host; no PostgreSQL installation is required. Select the store using `--db` or `--db-env`.
+
+## PostgreSQL
+
+Set `METRONOME_DB` to the connection URL using your secret store, and start Metronome with:
+
+```sh
+metronome serve --db-env METRONOME_DB --config instance.json
+```
+
+Using `--db-env` keeps the URL out of process arguments; Metronome does not print connection credentials
+or the URL. Give the instance its own database or an existing dedicated schema (set `search_path` in the URL).
+Use a `postgres://` or `postgresql://` URL; keyword/value connection strings and malformed URL schemes
+are rejected rather than interpreted as file paths.
+The database role needs permission to create tables and write events in that schema. Use a direct or
+session-preserving connection, not transaction pooling. Schema setup is automatic and versioned. Configure
+TLS according to your database provider, for example with `sslmode=verify-full`.
+
+Only one writer may hold the database/schema's advisory lock. A second instance refuses to start, so use
+a stop-then-start (Recreate) rollout, not overlapping replicas. If a connection is lost, Metronome reconnects
+and takes the lock again before accessing the log. If another writer holds the lock or the log sequence
+or schema version has changed, readiness fails and the instance refuses further writes. Restart it to replay the log.
+
+Use your database provider's backups and point-in-time restore, or PostgreSQL's `pg_dump` and `pg_restore`.
+Stop the instance and its writers before restoring and verify `/readyz` afterwards. The `metronome backup`
+command is for SQLite only.
+
+## Moving from SQLite
+
+Stop the SQLite service and all its writers, including intake, publish and poll loops. Set `METRONOME_DB`
+to the destination PostgreSQL URL. The destination must be empty or contain an exact prefix of the source log.
+
+```sh
+metronome migrate-store --from metronome.db --to-env METRONOME_DB
+metronome serve --db-env METRONOME_DB
+```
+
+Migration preserves the event sequence, timestamps and payloads and verifies the copied events and replayed
+state. Rerunning the command copies only missing events. Keep the original SQLite file as a backup.
+Check `/readyz` and ensure `last_seq` equals the sequence reported by the migration before resuming the loops.
 
 ## Probes
 
@@ -21,7 +63,7 @@ curl -i http://127.0.0.1:7340/readyz
   A failed database check returns 503 `{"status":"unavailable","error":"..."}`. Use this for readiness.
 - Other routes return 503 with `Retry-After: 1` until replay completes.
 
-## Backup
+## SQLite backup
 
 Run the backup command where the database is mounted, even while `serve` runs:
 
@@ -34,7 +76,7 @@ It produces a verified, consistent SQLite snapshot including committed WAL write
 and last sequence, and refuses an existing destination. The destination filesystem must support hard links.
 There is no HTTP backup endpoint. Arrange retention and off-volume copies in the operator's infrastructure.
 
-## Restore
+## SQLite restore
 
 Stop the service and its writers before restoring. Restoring discards events after the backup. Never copy a
 backup over a running service's database. Move the old database and any WAL and SHM files into a new directory
