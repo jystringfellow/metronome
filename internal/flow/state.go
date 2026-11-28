@@ -50,6 +50,7 @@ func (a AskType) Valid() bool {
 }
 
 type Item struct {
+	PRs           []string    `json:"prs,omitempty"`
 	Workstream    string      `json:"workstream"`
 	ID            string      `json:"id"`
 	Ref           string      `json:"ref"`
@@ -97,6 +98,7 @@ type PR struct {
 }
 
 type Slice struct {
+	Adopted            *AdoptedPR  `json:"adopted,omitempty"`
 	Workstream         string      `json:"workstream"`
 	ID                 string      `json:"id"`
 	ItemID             string      `json:"item_id"`
@@ -476,9 +478,10 @@ func crossLess(leftPosition, rightPosition int, left, right *Item, leftID, right
 const DefaultWorkstream = "default"
 
 type Workstream struct {
-	Name      string      `json:"name"`
-	Limits    StageLimits `json:"limits"`
-	CreatedAt time.Time   `json:"created_at,omitzero"`
+	AdoptLabel string      `json:"adopt_label,omitempty"`
+	Name       string      `json:"name"`
+	Limits     StageLimits `json:"limits"`
+	CreatedAt  time.Time   `json:"created_at,omitzero"`
 }
 
 type StageUsage = StageLimits
@@ -489,15 +492,16 @@ func (s *State) StageUsage(ws string) StageUsage {
 }
 
 type WorkstreamView struct {
-	Name   string      `json:"name"`
-	Limits StageLimits `json:"limits"`
-	Usage  StageUsage  `json:"usage"`
+	AdoptLabel string      `json:"adopt_label,omitempty"`
+	Name       string      `json:"name"`
+	Limits     StageLimits `json:"limits"`
+	Usage      StageUsage  `json:"usage"`
 }
 
 func (s *State) WorkstreamViews() []WorkstreamView {
 	out := make([]WorkstreamView, 0, len(s.Workstreams))
 	for name, ws := range s.Workstreams {
-		out = append(out, WorkstreamView{Name: name, Limits: ws.Limits, Usage: s.StageUsage(name)})
+		out = append(out, WorkstreamView{Name: name, Limits: ws.Limits, Usage: s.StageUsage(name), AdoptLabel: ws.AdoptLabel})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out

@@ -380,7 +380,7 @@ func TestNextJSONPrintsTheBrief(t *testing.T) {
 	}
 	want := map[string]map[string]any{
 		"claim":   {"workstream": "default", "run_id": "R1", "slice_id": "I1.1", "lease_until": lease},
-		"slice":   {"id": "I1.1", "repo": "acme/app", "title": "API endpoint", "criteria": []any{"GET /export returns CSV", "An empty account exports a header row\nNo data rows"}, "approvers": []any{"rev", "sam"}},
+		"slice":   {"id": "I1.1", "repo": "acme/app", "title": "API endpoint", "criteria": []any{"GET /export returns CSV", "An empty account exports a header row\nNo data rows"}, "approvers": []any{"rev", "sam"}, "adopted": nil},
 		"item":    {"id": "I1", "ref": "ACME-1", "title": "Add export", "intent": "Let customers download their data\nInclude all records", "labels": []any{}},
 		"history": emptyHistory(),
 	}
@@ -390,7 +390,7 @@ func TestNextJSONPrintsTheBrief(t *testing.T) {
 	out = e.ok("laptop", "next", "--runner", "laptop", "--slice", "I1.2", "--json")
 	brief = decodeBrief(t, out)
 	want["claim"] = map[string]any{"workstream": "default", "run_id": "R2", "slice_id": "I1.2", "lease_until": brief["claim"]["lease_until"]}
-	want["slice"] = map[string]any{"id": "I1.2", "repo": "acme/docs", "title": "Docs", "criteria": []any{}, "approvers": []any{}}
+	want["slice"] = map[string]any{"id": "I1.2", "repo": "acme/docs", "title": "Docs", "criteria": []any{}, "approvers": []any{}, "adopted": nil}
 	if !reflect.DeepEqual(brief, want) || !strings.Contains(out, `"approvers": []`) {
 		t.Fatalf("second brief = %s, want %#v", out, want)
 	}

@@ -40,12 +40,13 @@ Looking:
 Workstreams:
   workstream create NAME [--ready N --plan N --execute N --review N --release N]
   workstream set NAME --LIMIT N    change one or more stage limits
+  workstream set NAME --adopt-label LABEL    set or clear a PR adoption label
   workstream list [--json]        limits and usage per workstream
 
 Backlog and plan:
   backlog sync [--workstream NAME] FILE  add ranked items (default workstream if omitted)
                          skips items with "claimed_by" set
-                         items may carry "labels", "slices" (as plan propose) and an optional "predicted_tier" (default 1); see docs/backlog.md
+                         items may carry "labels", "prs", "slices" (as plan propose) and an optional "predicted_tier" (default 1); see docs/backlog.md
   intake --workstream NAME [--every D] -- CMD [ARGS...]  mirror Ready from a source command; see docs/intake.md
   publish --workstream NAME --name PUBLISHER [--every D] [--batch N] -- CMD [ARGS...]
                          mirror transitions to a publisher command; see docs/intake.md
@@ -73,7 +74,8 @@ GitHub:
                          print backlog JSON from open labelled issues, for intake; see docs/intake.md
   github publish --project OWNER/N --instance NAME [--status-field Status] [--map TRANSITION=OPTION] [--assignee LOGIN]
                          read transitions and update project Status, PR links and issue claims
-  github poll [--every 1m]        record PR activity, including rework fixed outside a run, once or on a repeat
+  github poll [--every 1m] [--adopt-repo OWNER/NAME]...  record PR activity and adopt PRs
+  github adopt OWNER/NAME#N [--workstream W]  adopt an existing PR
   github pr-opened --slice S --repo OWNER/NAME --number N --head SHA
   github checks --slice S --head SHA (--success | --failure)
   github ready-for-review --slice S
@@ -94,29 +96,31 @@ Global flags (before the command): --server URL (or METRONOME_URL), --as WHO (or
 `
 
 type app struct {
-	out, errOut io.Writer
-	client      *api.Client
-	requestID   string
-	prs         github.Source
-	issues      github.IssueSource
-	boards      ado.Source
-	projects    github.ProjectBoard
-	stdin       io.Reader
-	terminal    func() bool
-	now         func() time.Time
-	wait        func(context.Context, time.Duration) error
+	out, errOut  io.Writer
+	client       *api.Client
+	requestID    string
+	prs          github.Source
+	pullRequests github.PRSource
+	issues       github.IssueSource
+	boards       ado.Source
+	projects     github.ProjectBoard
+	stdin        io.Reader
+	terminal     func() bool
+	now          func() time.Time
+	wait         func(context.Context, time.Duration) error
 }
 
 type Deps struct {
-	HTTP     *http.Client
-	GitHub   github.Source
-	Issues   github.IssueSource
-	Boards   ado.Source
-	Projects github.ProjectBoard
-	Stdin    io.Reader
-	Terminal func() bool
-	Now      func() time.Time
-	Wait     func(context.Context, time.Duration) error
+	HTTP         *http.Client
+	GitHub       github.Source
+	PullRequests github.PRSource
+	Issues       github.IssueSource
+	Boards       ado.Source
+	Projects     github.ProjectBoard
+	Stdin        io.Reader
+	Terminal     func() bool
+	Now          func() time.Time
+	Wait         func(context.Context, time.Duration) error
 }
 
 func Run(ctx context.Context, args []string, out, errOut io.Writer) int {
@@ -133,6 +137,9 @@ func RunWithDeps(ctx context.Context, args []string, out, errOut io.Writer, deps
 	}
 	if deps.GitHub == nil {
 		deps.GitHub = github.GH{}
+	}
+	if deps.PullRequests == nil {
+		deps.PullRequests, _ = deps.GitHub.(github.PRSource)
 	}
 	if deps.Issues == nil {
 		deps.Issues = github.GH{}
@@ -169,7 +176,7 @@ func RunWithDeps(ctx context.Context, args []string, out, errOut io.Writer, deps
 		global.Usage()
 		return 2
 	}
-	a := &app{out: out, errOut: errOut, requestID: *requestID, prs: deps.GitHub, issues: deps.Issues, boards: deps.Boards, projects: deps.Projects, stdin: deps.Stdin, terminal: deps.Terminal, now: deps.Now, wait: deps.Wait,
+	a := &app{out: out, errOut: errOut, requestID: *requestID, prs: deps.GitHub, pullRequests: deps.PullRequests, issues: deps.Issues, boards: deps.Boards, projects: deps.Projects, stdin: deps.Stdin, terminal: deps.Terminal, now: deps.Now, wait: deps.Wait,
 		client: &api.Client{BaseURL: *server, Actor: *actor, HTTP: deps.HTTP}}
 	if err := a.dispatch(ctx, rest[0], rest[1:]); err != nil {
 		var status exitStatus
@@ -557,11 +564,12 @@ type briefClaim struct {
 }
 
 type briefSlice struct {
-	ID        string   `json:"id"`
-	Repo      string   `json:"repo"`
-	Title     string   `json:"title"`
-	Criteria  []string `json:"criteria"`
-	Approvers []string `json:"approvers"`
+	Adopted   *flow.AdoptedPR `json:"adopted"`
+	ID        string          `json:"id"`
+	Repo      string          `json:"repo"`
+	Title     string          `json:"title"`
+	Criteria  []string        `json:"criteria"`
+	Approvers []string        `json:"approvers"`
 }
 
 type briefItem struct {
@@ -632,7 +640,7 @@ func (a *app) readBrief(ctx context.Context, c flow.Claim) (brief, error) {
 				}
 				return brief{
 					Claim: briefClaim{Workstream: c.Workstream, RunID: c.RunID, SliceID: c.SliceID, LeaseUntil: c.LeaseUntil.UTC()},
-					Slice: briefSlice{ID: sl.ID, Repo: sl.Repo, Title: sl.Title,
+					Slice: briefSlice{ID: sl.ID, Repo: sl.Repo, Title: sl.Title, Adopted: sl.Adopted,
 						Criteria: append([]string{}, sl.Criteria...), Approvers: append([]string{}, sl.Approvers...)},
 					Item:    briefItem{ID: it.ID, Ref: it.Ref, Title: it.Title, Intent: it.Intent, Labels: append([]string{}, it.Labels...)},
 					History: newBriefHistory(snapshot),
@@ -649,6 +657,9 @@ func (b brief) writeText(w io.Writer) error {
 	fmt.Fprintf(&text, "run %s claimed slice %s; lease until %s\n", b.Claim.RunID, b.Claim.SliceID, b.Claim.LeaseUntil.Local().Format(time.Kitchen))
 	fmt.Fprintf(&text, "workstream: %s\n", b.Claim.Workstream)
 	fmt.Fprintf(&text, "slice:     %s %s\nrepo:      %s\n", b.Slice.ID, b.Slice.Title, b.Slice.Repo)
+	if pr := b.Slice.Adopted; pr != nil {
+		fmt.Fprintf(&text, "adopted:   PR %s#%d by %s on branch %s; others may push to it: bring it up to date with the branch's latest commits first, and ask if that is not clean\n", pr.Repo, pr.Number, pr.Author, pr.Branch)
+	}
 	fmt.Fprintf(&text, "item:      %s %s (%s)\n", b.Item.Ref, b.Item.Title, b.Item.ID)
 	intent := b.Item.Intent
 	if intent == "" {
@@ -803,6 +814,9 @@ func (a *app) github(ctx context.Context, args []string) error {
 	if event == "poll" {
 		return a.githubPoll(ctx, args)
 	}
+	if event == "adopt" {
+		return a.githubAdopt(ctx, args)
+	}
 	if event == "issues" {
 		return a.githubIssues(ctx, args)
 	}
@@ -831,13 +845,21 @@ func (a *app) github(ctx context.Context, args []string) error {
 func (a *app) githubPoll(ctx context.Context, args []string) error {
 	fs := newFlags("github poll")
 	every := fs.Duration("every", 0, "")
+	var repos []string
+	fs.Func("adopt-repo", "", func(value string) error {
+		if !issueRepo.MatchString(value) || strings.HasSuffix(value, "/.") || strings.HasSuffix(value, "/..") {
+			return fmt.Errorf("--adopt-repo must be OWNER/NAME")
+		}
+		repos = append(repos, value)
+		return nil
+	})
 	if err := parse(fs, args, 0); err != nil {
 		return err
 	}
 	if *every < 0 {
 		return usagef("--every must be positive")
 	}
-	p := github.Poller{Client: a.client, Source: a.prs}
+	p := github.Poller{Client: a.client, Source: a.prs, Adopt: a.pullRequests, AdoptRepos: repos}
 	if *every == 0 {
 		return a.pollOnce(ctx, p)
 	}
@@ -862,6 +884,10 @@ func (a *app) pollOnce(ctx context.Context, p github.Poller) error {
 	if err != nil {
 		return err
 	}
+	return a.printPoll(res)
+}
+
+func (a *app) printPoll(res github.PollResult) error {
 	for _, act := range res.Recorded {
 		fmt.Fprintln(a.out, "recorded "+act.String())
 	}
@@ -916,10 +942,10 @@ func (a *app) workstream(ctx context.Context, args []string) error {
 			return writeJSON(a.out, views)
 		}
 		tw := tabwriter.NewWriter(a.out, 0, 2, 2, ' ', 0)
-		fmt.Fprintln(tw, "WORKSTREAM\tREADY\tPLAN\tEXECUTE\tREVIEW\tRELEASE")
+		fmt.Fprintln(tw, "WORKSTREAM\tREADY\tPLAN\tEXECUTE\tREVIEW\tRELEASE\tADOPT LABEL")
 		for _, ws := range views {
 			l, u := ws.Limits, ws.Usage
-			fmt.Fprintf(tw, "%s\t%d/%d\t%d/%d\t%d/%d\t%d/%d\t%d/%d\n", ws.Name, u.Ready, l.Ready, u.Plan, l.Plan, u.Execute, l.Execute, u.Review, l.Review, u.Release, l.Release)
+			fmt.Fprintf(tw, "%s\t%d/%d\t%d/%d\t%d/%d\t%d/%d\t%d/%d\t%s\n", ws.Name, u.Ready, l.Ready, u.Plan, l.Plan, u.Execute, l.Execute, u.Review, l.Review, u.Release, l.Release, dash(ws.AdoptLabel))
 		}
 		return tw.Flush()
 	}
@@ -927,6 +953,10 @@ func (a *app) workstream(ctx context.Context, args []string) error {
 		return usagef("usage: workstream create|set|list")
 	}
 	var p flow.PartialLimits
+	var adoptLabel *string
+	if sub == "set" {
+		adoptLabel = fs.String("adopt-label", "", "")
+	}
 	values := map[string]**int{"ready": &p.Ready, "plan": &p.Plan, "execute": &p.Execute, "review": &p.Review, "release": &p.Release}
 	flags := map[string]*int{}
 	for name := range values {
@@ -935,7 +965,20 @@ func (a *app) workstream(ctx context.Context, args []string) error {
 	if err := parse(fs, args[1:], 1); err != nil {
 		return err
 	}
-	fs.Visit(func(f *flag.Flag) { *values[f.Name] = flags[f.Name] })
+	labelSet := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "adopt-label" {
+			labelSet = true
+		} else {
+			*values[f.Name] = flags[f.Name]
+		}
+	})
+	if labelSet {
+		if p != (flow.PartialLimits{}) {
+			return usagef("give limits or --adopt-label, not both")
+		}
+		return a.post(ctx, "/v1/workstreams/"+url.PathEscape(fs.Arg(0))+"/adopt-label", map[string]string{"label": *adoptLabel})
+	}
 	if sub == "create" {
 		return a.post(ctx, "/v1/workstreams", api.WorkstreamCreateRequest{Name: fs.Arg(0), PartialLimits: p})
 	}

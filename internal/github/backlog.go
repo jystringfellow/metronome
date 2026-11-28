@@ -16,7 +16,7 @@ var InstanceName = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,31}$`)
 
 const claimPrefix = "metronome:claimed:"
 
-func IssueBacklog(repo, fallbackOwner string, issues []Issue, ranks map[int]float64, instance string) ([]flow.BacklogItem, error) {
+func IssueBacklog(repo, fallbackOwner string, issues []Issue, ranks map[int]float64, instance string, linked map[int][]string) ([]flow.BacklogItem, error) {
 	issues = slices.Clone(issues)
 	slices.SortStableFunc(issues, func(left, right Issue) int {
 		leftRank, leftRanked := ranks[left.Number]
@@ -72,7 +72,16 @@ func IssueBacklog(repo, fallbackOwner string, issues []Issue, ranks map[int]floa
 			}
 		}
 		slices.Sort(claims)
-		items = append(items, flow.BacklogItem{Ref: ref, Title: issue.Title, Intent: bodyIntent(issue.Body), Owner: owner, PredictedTier: tier, ClaimedBy: strings.Join(claims, ","), Slices: []flow.SliceSpec{{Title: issue.Title, Repo: repo, Criteria: bodyCriteria(issue.Body), Approvers: []string{}}}})
+		prs, err := bodyPRs(issue.Body)
+		if err != nil {
+			problems = append(problems, fmt.Errorf("%s: %w", id, err))
+		}
+		prs = append(prs, linked[issue.Number]...)
+		prs, err = flow.NormalisePRs(prs)
+		if err != nil {
+			problems = append(problems, fmt.Errorf("%s: %w", id, err))
+		}
+		items = append(items, flow.BacklogItem{Ref: ref, Title: issue.Title, Intent: bodyIntent(issue.Body), Owner: owner, PredictedTier: tier, ClaimedBy: strings.Join(claims, ","), PRs: prs, Slices: []flow.SliceSpec{{Title: issue.Title, Repo: repo, Criteria: bodyCriteria(issue.Body), Approvers: []string{}}}})
 	}
 	if err := errors.Join(problems...); err != nil {
 		return nil, err

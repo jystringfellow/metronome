@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 	"unicode"
+
+	"github.com/jystringfellow/metronome/internal/flow"
 )
 
 type Issue struct {
@@ -35,8 +37,97 @@ func ParseProject(value string) (Project, error) {
 }
 
 type IssueSource interface {
+	LinkedPRs(ctx context.Context, repo, label string) (map[int][]string, error)
 	OpenIssues(ctx context.Context, repo, label string) ([]Issue, error)
 	ProjectRanks(ctx context.Context, project Project, field, repo string) (map[int]float64, error)
+}
+
+const linkedPRsQuery = `query($owner: String!, $repo: String!, $label: String!, $endCursor: String) {
+ repository(owner: $owner, name: $repo) {
+  issues(first: 100, after: $endCursor, states: OPEN, labels: [$label]) {
+   pageInfo { hasNextPage endCursor }
+   nodes { number closedByPullRequestsReferences(first: 10, includeClosedPrs: false) { totalCount nodes { number repository { nameWithOwner } } } }
+  }
+ }
+}`
+
+func (g GH) LinkedPRs(ctx context.Context, repo, label string) (map[int][]string, error) {
+	run := g.Run
+	if run == nil {
+		run = runGH
+	}
+	owner, name, _ := strings.Cut(repo, "/")
+	data, err := run(ctx, "api", "graphql", "--paginate", "-f", "query="+linkedPRsQuery, "-f", "owner="+owner, "-f", "repo="+name, "-f", "label="+label)
+	if err != nil {
+		return nil, err
+	}
+	return ParseLinkedPRs(data)
+}
+
+func ParseLinkedPRs(data []byte) (map[int][]string, error) {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	linked := map[int][]string{}
+	more := true
+	for more {
+		var response struct {
+			Errors []struct{ Message string }
+			Data   struct {
+				Repository *struct {
+					Issues *struct {
+						PageInfo struct {
+							HasNextPage *bool
+							EndCursor   string
+						}
+						Nodes []struct {
+							Number                         int
+							ClosedByPullRequestsReferences *struct {
+								TotalCount *int
+								Nodes      []struct {
+									Number     int
+									Repository struct{ NameWithOwner string }
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+		if err := dec.Decode(&response); err != nil {
+			return nil, fmt.Errorf("linked PRs: %w", err)
+		}
+		if len(response.Errors) > 0 {
+			return nil, fmt.Errorf("linked PRs: %s", response.Errors[0].Message)
+		}
+		if response.Data.Repository == nil || response.Data.Repository.Issues == nil {
+			return nil, fmt.Errorf("linked PRs: missing issues")
+		}
+		page := response.Data.Repository.Issues
+		if page.PageInfo.HasNextPage == nil || page.Nodes == nil {
+			return nil, fmt.Errorf("linked PRs: missing page information")
+		}
+		more = *page.PageInfo.HasNextPage
+		if more && page.PageInfo.EndCursor == "" {
+			return nil, fmt.Errorf("linked PRs: missing next page cursor")
+		}
+		for _, issue := range page.Nodes {
+			refs := issue.ClosedByPullRequestsReferences
+			if refs == nil || refs.TotalCount == nil || *refs.TotalCount != len(refs.Nodes) || *refs.TotalCount > 10 {
+				return nil, fmt.Errorf("issue %d linked PRs missing or truncated", issue.Number)
+			}
+			for _, pr := range refs.Nodes {
+				linked[issue.Number] = append(linked[issue.Number], FormatPRRef(pr.Repository.NameWithOwner, pr.Number))
+			}
+			refsNormalised, err := flow.NormalisePRs(linked[issue.Number])
+			if err != nil {
+				return nil, err
+			}
+			linked[issue.Number] = refsNormalised
+		}
+	}
+	if dec.Decode(new(json.RawMessage)) != io.EOF {
+		return nil, fmt.Errorf("linked PRs: unexpected data after final page")
+	}
+	return linked, nil
 }
 
 func (g GH) OpenIssues(ctx context.Context, repo, label string) ([]Issue, error) {

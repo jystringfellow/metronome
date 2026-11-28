@@ -25,6 +25,13 @@ an [intake command](intake.md).
 | `slices` | array of slices | No | empty | Pre-planned slices. Absent, `null` or `[]` means the plan must be proposed in Plan. |
 | `labels` | array of strings | No | empty | Source labels saved with the item and shown in board JSON; each must be nonempty. |
 | `claimed_by` | string | No | `""` | Nonempty when the source reports a claim held by someone other than this Metronome instance. The source command recognises its own claims. |
+| `prs` | array of strings | No | empty | Existing GitHub PR references, `OWNER/NAME#N`, for adoption instead of planning. |
+
+**PR references:** repository names are lowercased; references are de-duplicated and sorted. At most ten
+distinct references are allowed. Invalid references refuse the whole sync or intake. Items naming PRs may
+have at most one pre-planned slice, with no dependencies. Its title, criteria and approvers are used, but
+the chosen PR determines the repository. `github poll` adopts a single open PR, preferring the only non-draft
+when several are open; otherwise it reports ambiguity. Such Ready items are not eligible for `plan start`.
 
 **Labels:** absent, `null` and `[]` all mean no labels. Each label is trimmed, internal whitespace runs
 are collapsed to a single space, and the result is lowercased. Labels are de-duplicated and sorted.

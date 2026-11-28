@@ -67,18 +67,21 @@ or local and hosted instances sharing one source; it does not eliminate the race
 | Local item status | Intake behaviour |
 | --- | --- |
 | Unknown | Add unclaimed items in source order when Ready has room. |
-| Ready | Update rank, title, intent and labels; shelve items missing from the list or claimed elsewhere. |
+| Ready | Update rank, title, intent, labels and PR references; shelve items missing from the list or claimed elsewhere. |
 | Shelved | Restore the same item ID when listed unclaimed and Ready has room. |
-| Planning, executing, awaiting release, releasing | Keep unchanged; report a disappearance or foreign claim. |
+| Planning, executing, awaiting release, releasing | Keep unchanged; report a disappearance, foreign claim or changed PR references. |
 | Done or dropped | Ignore. |
 | In another workstream | Report and skip. |
 
 Rank is the item's 1-based position in the full source list, including skipped items. Previously parked
 items retain their front-of-queue priority. Shelving frees Ready room before refill. Adds and restores
 occur only when Ready is below the refill threshold, up to the workstream's Ready limit. New items never
-displace existing Ready items. Changes to owner, value, tier, labels or slices on existing Ready or restored items
+displace existing Ready items. Changes to owner, value, tier or slices on existing Ready or restored items
 are reported rather than applied. Shelved items retain the reason and claimant recorded when shelved;
 they are visible through `board --json`, but not the text board or planning queue.
+
+Items created directly by PR adoption do not disappear from a source they never belonged to. A newly
+named PR already followed by the same item is not a PR-reference change requiring a decision.
 
 Running the same complete source output twice against unchanged tracker state emits no new events on the
 second round. Notes may repeat. `POST /v1/backlog/intake` offers the same mirror rules to API callers and
@@ -105,6 +108,7 @@ come last. Ties and issues without a project are ordered oldest first, then by i
 | `owner` | First assignee's login, otherwise `--owner`. |
 | `claimed_by` | Sorted, comma-separated instance names from foreign `metronome:claimed:INSTANCE` labels. |
 | `predicted_tier` | A `tier:N` label (0–3), omitted when absent. |
+| `prs` | Standalone `PR: <url or OWNER/NAME#N>` lines outside fences, plus open PRs linked to the issue through closing references. |
 | `slices` | One slice with the same title and repository, no dependencies or named approvers. |
 | `criteria` | List items in an Acceptance criteria heading's section, otherwise markdown task-list items. Wrapped text is joined, including checked tasks. |
 
@@ -143,9 +147,18 @@ Ranked items come first, lowest rank first, with ties broken by ID; unranked ite
 | `owner` | `System.AssignedTo.uniqueName`, then `displayName`, otherwise `--owner`. |
 | rank | `Microsoft.VSTS.Common.BacklogPriority`, falling back to `Microsoft.VSTS.Common.StackRank`. |
 | `predicted_tier`, `labels` | Semicolon-separated `System.Tags`: `tier:N` (0–3) sets tier, other distinct tags are labels. |
-| `slices` | One slice if Description or Acceptance Criteria has a standalone `Repo: OWNER/NAME` line; otherwise no pre-planned slices. |
+| `slices` | One slice if Description or Acceptance Criteria has a standalone `Repo: OWNER/NAME` or `PR:` line; otherwise no pre-planned slices. |
+| `prs` | Standalone `PR: <url or OWNER/NAME#N>` lines in Description or Acceptance Criteria. |
 | `criteria` | HTML list items from `Microsoft.VSTS.Common.AcceptanceCriteria`, or its paragraphs if it has no list items. |
 | `claimed_by` | Assignee, or `state STATE` for non-ready, unfinished `System.State`. |
+
+PR lines are excluded from intent and criteria. If an Azure DevOps artifact link names a pull request but
+does not identify its repository, intake reports it and asks for a `PR: OWNER/NAME#N` line; resolving that
+connection is unverified. Without an explicit PR reference, the item carries `claimed_by: "linked pull request"`
+if otherwise unclaimed, keeping it out of planning until a person supplies a `PR:` line. The existing Ready
+and foreign-claim rules still apply. For both sources, invalid PR lines fail intake, and `github poll`
+adopts the selected open PR rather than planning fresh work. Source
+items keep their owner; the PR author is recorded on the adopted slice.
 
 HTML entities are decoded after tag removal, so escaped angle brackets stay literal text. Repository
 markers are excluded from intent and criteria. Value stays zero and approvers are empty.
@@ -244,6 +257,7 @@ same event; ask changes follow them.
 | `awaiting_release`, `releasing` | Waiting for or holding a Release slot. |
 | `done`, `dropped` | Item finished or abandoned. |
 | `claimed`, `submitted` | Slice claimed or submitted. |
+| `adopted` | An existing PR is adopted into a slice with its branch and head. |
 | `pr_open`, `in_review`, `approved`, `merged` | PR stages, including return to PR open on approval withdrawal and return to review after a fix outside a run. |
 | `rework` | Failed checks or requested changes. |
 | `stalled`, `parked`, `flagged` | Slice waiting, returned to queue, or flagged. |
@@ -280,7 +294,7 @@ fields or options fail the round. `--status-field` names the single-select field
 | Default Status | Transitions |
 | --- | --- |
 | Ready | `planning`, `ready` |
-| In progress | `claimed`, `submitted`, `pr_open`, `rework` |
+| In progress | `claimed`, `adopted`, `submitted`, `pr_open`, `rework` |
 | In review | `in_review`, `approved` |
 | Done | `done` |
 
@@ -294,6 +308,9 @@ edits between runs; a human edit racing a write within the same round is not an 
 
 The first record carrying a distinct PR adds a comment linking it, with a marker to prevent duplicate comments
 on retries. `claimed` adds the instance label and assigns the issue to `--assignee` (default the `gh` login).
+`adopted` adds the instance label without assigning the issue.
+Records referring directly to a PR rather than a source issue are skipped with a note, including subsequent
+transitions for that item.
 On `done` the issue is closed as completed; `done` and `dropped` clear this instance's claim. Completed
 transition keys are kept in publisher state to avoid replaying successful operations in a partially failed batch.
 Running `github publish` directly without the state file is supported but warns that last-written values will

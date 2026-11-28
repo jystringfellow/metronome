@@ -73,6 +73,63 @@ const prRecord = `{"seq":2,"item_id":"I1","slice_id":"I1.1","ref":"MET-18","tran
 const reviewRecord = `{"seq":3,"item_id":"I1","slice_id":"I1.1","ref":"acme/app#7","transition":"in_review"}` + "\n"
 const doneRecord = `{"seq":4,"item_id":"I1","ref":"acme/app#7","transition":"done"}` + "\n"
 
+func TestPublisherAdoptedSourceIssue(t *testing.T) {
+	options := publisherOptions(t)
+	label := "metronome:claimed:laptop-a"
+	endpoint := "repos/acme/app/issues/7"
+	gh, check := exchanges(t, []ghExchange{
+		projectCall(publishPage("Ready", "OPEN", "[]", "[]")),
+		{args: []string{"label", "create", label, "--repo", "acme/app", "--force", "--color", "BFDADC", "--description", "Claimed by Metronome instance laptop-a"}},
+		apiCall("-X", "POST", endpoint+"/labels", "-f", "labels[]="+label),
+		{args: []string{"api", "--paginate", endpoint + "/comments"}, response: `[]`},
+		apiCall(endpoint+"/comments", "-f", "body=Metronome slice I1.1: https://github.com/acme/app/pull/12\n\n<!-- metronome:pr acme/app#12 -->"),
+		statusCall("progress"),
+	})
+	input := strings.Replace(prRecord, "pr_open", "adopted", 1)
+	if err := gh.Publish(t.Context(), options, strings.NewReader(input), &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	check()
+	state, err := loadPublishState(options.StateFile)
+	if err != nil || state.Issues["acme/app#7"].Assigned != "" || state.Issues["acme/app#7"].Status != "In progress" {
+		t.Fatal(state, err)
+	}
+}
+
+func TestPublisherSkipsDirectAdoptionAndContinues(t *testing.T) {
+	options := publisherOptions(t)
+	direct := `{"seq":1,"item_id":"I2","slice_id":"I2.1","ref":"acme/app#12","transition":"adopted","pr":{"repo":"acme/app","number":12,"head":"abc"}}` + "\n" + `{"seq":1,"item_id":"I2","ref":"acme/app#12","transition":"executing"}` + "\n"
+	gh, check := exchanges(t, []ghExchange{
+		projectCall(publishPage("Ready", "OPEN", "[]", "[]")),
+		{args: []string{"api", "repos/acme/app/issues/12"}, response: `{"number":12,"state":"open","pull_request":{"url":"https://example.com/pr/12"}}`},
+		statusCall("review"),
+	})
+	var notes bytes.Buffer
+	if err := gh.Publish(t.Context(), options, strings.NewReader(direct+reviewRecord), &bytes.Buffer{}, &notes); err != nil {
+		t.Fatal(err)
+	}
+	check()
+	if strings.Count(notes.String(), "pull request, not a source issue; skipped") != 2 {
+		t.Fatal(notes.String())
+	}
+	state, err := loadPublishState(options.StateFile)
+	if err != nil || state.Seq != 3 || len(state.Issues) != 1 || state.Issues["acme/app#7"].Status != "In review" {
+		t.Fatal(state, err)
+	}
+	gh, check = exchanges(t, []ghExchange{
+		projectCall(publishPage("In review", "OPEN", "[]", "[]")),
+		{args: []string{"api", "repos/acme/app/issues/12"}, response: `{"number":12,"state":"closed","pull_request":{"url":"https://example.com/pr/12"}}`},
+	})
+	if err := gh.Publish(t.Context(), options, strings.NewReader(`{"seq":4,"item_id":"I2","ref":"acme/app#12","transition":"done"}`+"\n"), &bytes.Buffer{}, &notes); err != nil {
+		t.Fatal(err)
+	}
+	check()
+	state, err = loadPublishState(options.StateFile)
+	if err != nil || state.Seq != 4 {
+		t.Fatal(state, err)
+	}
+}
+
 func TestPublisherGithubLifecycleAndReplay(t *testing.T) {
 	options := publisherOptions(t)
 	label := "metronome:claimed:laptop-a"
@@ -158,7 +215,7 @@ func TestPublisherProjectValidationAndMapping(t *testing.T) {
 		t.Fatal("expected missing option error")
 	}
 	check()
-	if !reflect.DeepEqual(DefaultMapping(), map[string]string{"planning": "Ready", "ready": "Ready", "claimed": "In progress", "submitted": "In progress", "pr_open": "In progress", "rework": "In progress", "in_review": "In review", "approved": "In review", "done": "Done"}) {
+	if !reflect.DeepEqual(DefaultMapping(), map[string]string{"planning": "Ready", "ready": "Ready", "claimed": "In progress", "adopted": "In progress", "submitted": "In progress", "pr_open": "In progress", "rework": "In progress", "in_review": "In review", "approved": "In review", "done": "Done"}) {
 		t.Fatal(DefaultMapping())
 	}
 }

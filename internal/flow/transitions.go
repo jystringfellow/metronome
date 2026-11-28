@@ -76,6 +76,16 @@ func (s *State) ApplyTransitions(e Event) ([]Transition, error) {
 	if err := s.Apply(e); err != nil {
 		return nil, err
 	}
+	if e.Type == EvPRAdopted {
+		it = s.Items[p.ItemID]
+		base := Transition{Seq: e.Seq, At: e.At, Workstream: it.Workstream, ItemID: it.ID, Ref: it.Ref, Actor: e.Actor}
+		sl := s.Slices[p.SliceID]
+		adopted := base
+		adopted.Transition, adopted.SliceID, adopted.Branch = "adopted", sl.ID, sl.Branch
+		adopted.PR = &TransitionPR{Repo: sl.PR.Repo, Number: sl.PR.Number, Head: sl.PR.HeadSHA}
+		base.From, base.Transition = string(before), string(ItemExecuting)
+		return []Transition{adopted, base}, nil
+	}
 	if it == nil {
 		return nil, nil
 	}
