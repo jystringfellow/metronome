@@ -23,6 +23,7 @@ an [intake command](intake.md).
 | `value` | number | No | `0` | Item value. |
 | `predicted_tier` | integer, 0 to 3 | No | `1` | Tier proposed for confirmation. If absent or `null`, the approval ask explains the default; explicit `0` stays 0. |
 | `slices` | array of slices | No | empty | Pre-planned slices. Absent, `null` or `[]` means the plan must be proposed in Plan. |
+| `labels` | array of strings | No | empty | Source labels saved with the item and shown in board JSON; each must be nonempty. |
 | `claimed_by` | string | No | `""` | Nonempty when the source reports a claim held by someone other than this Metronome instance. The source command recognises its own claims. |
 
 **Labels:** absent, `null` and `[]` all mean no labels. Each label is trimmed, internal whitespace runs
@@ -51,7 +52,7 @@ Refill adds items only when Ready is below the refill threshold, up to the works
 Known references are skipped in their entirety, including any new slices or tier in the request.
 `backlog sync` also skips and reports items with `claimed_by` set. For an actual mirror rather than
 add-only refill, use [intake](intake.md), which requires an explicit workstream and a non-null `items` array.
-The built-in `metronome github issues` command produces this contract; see [GitHub Issues intake](intake.md#built-in-github-issues).
+The built-in `metronome github issues` and `metronome ado items` commands produce this contract; see [intake](intake.md).
 `plan start` proposes pre-planned slices and raises an approval ask for the owner. A person can replace
 the proposal with `plan propose`. `plan approve ITEM [--tier N]` approves the plan and confirms the tier;
 without `--tier`, the predicted tier is confirmed.

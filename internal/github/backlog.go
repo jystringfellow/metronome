@@ -58,7 +58,7 @@ func IssueBacklog(repo, fallbackOwner string, issues []Issue, ranks map[int]floa
 		if issue.Number <= 0 || strings.TrimSpace(issue.Title) == "" {
 			problems = append(problems, fmt.Errorf("%s needs a positive issue number and title", id))
 		}
-		tier, err := issueTier(issue.Labels)
+		tier, err := TierLabel(issue.Labels)
 		if err != nil {
 			problems = append(problems, fmt.Errorf("%s: %w", id, err))
 		}
@@ -80,7 +80,7 @@ func IssueBacklog(repo, fallbackOwner string, issues []Issue, ranks map[int]floa
 	return items, nil
 }
 
-func issueTier(labels []string) (*int, error) {
+func TierLabel(labels []string) (*int, error) {
 	var tier *int
 	for _, label := range labels {
 		key, value, ok := strings.Cut(label, ":")

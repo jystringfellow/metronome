@@ -17,6 +17,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/jystringfellow/metronome/internal/ado"
 	"github.com/jystringfellow/metronome/internal/api"
 	"github.com/jystringfellow/metronome/internal/flow"
 	"github.com/jystringfellow/metronome/internal/github"
@@ -80,6 +81,10 @@ GitHub:
   github changes-requested --slice S --by WHO
   github merged --slice S [--by WHO]   WHO merged it; before an approval, WHO approves it
 
+Azure DevOps:
+  ado items --org URL --project NAME (--wiql FILE | --query ID) [--owner WHO] [--ready-states S,...]
+                         print backlog JSON from a work item query, for intake; see docs/intake.md
+
 Maintenance:
   tick                            expire leases and asks now
 
@@ -93,6 +98,7 @@ type app struct {
 	requestID   string
 	prs         github.Source
 	issues      github.IssueSource
+	boards      ado.Source
 	projects    github.ProjectBoard
 	stdin       io.Reader
 	terminal    func() bool
@@ -104,6 +110,7 @@ type Deps struct {
 	HTTP     *http.Client
 	GitHub   github.Source
 	Issues   github.IssueSource
+	Boards   ado.Source
 	Projects github.ProjectBoard
 	Stdin    io.Reader
 	Terminal func() bool
@@ -128,6 +135,9 @@ func RunWithDeps(ctx context.Context, args []string, out, errOut io.Writer, deps
 	}
 	if deps.Issues == nil {
 		deps.Issues = github.GH{}
+	}
+	if deps.Boards == nil {
+		deps.Boards = ado.AZ{}
 	}
 	if deps.Projects == nil {
 		deps.Projects = github.GH{}
@@ -158,7 +168,7 @@ func RunWithDeps(ctx context.Context, args []string, out, errOut io.Writer, deps
 		global.Usage()
 		return 2
 	}
-	a := &app{out: out, errOut: errOut, requestID: *requestID, prs: deps.GitHub, issues: deps.Issues, projects: deps.Projects, stdin: deps.Stdin, terminal: deps.Terminal, now: deps.Now, wait: deps.Wait,
+	a := &app{out: out, errOut: errOut, requestID: *requestID, prs: deps.GitHub, issues: deps.Issues, boards: deps.Boards, projects: deps.Projects, stdin: deps.Stdin, terminal: deps.Terminal, now: deps.Now, wait: deps.Wait,
 		client: &api.Client{BaseURL: *server, Actor: *actor, HTTP: deps.HTTP}}
 	if err := a.dispatch(ctx, rest[0], rest[1:]); err != nil {
 		var status exitStatus
@@ -227,6 +237,8 @@ func (a *app) dispatch(ctx context.Context, cmd string, args []string) error {
 		return a.itemOnly(ctx, args, "release-done", "/release-done")
 	case "github":
 		return a.github(ctx, args)
+	case "ado":
+		return a.ado(ctx, args)
 	case "tick":
 		return a.post(ctx, "/v1/tick", nil)
 	case "help", "-h", "--help":

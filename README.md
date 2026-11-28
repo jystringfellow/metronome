@@ -41,6 +41,10 @@ it never discards work in Plan or later.
 optionally ranks issues by a GitHub Project's numeric field, and supplies one pre-planned slice per issue.
 Plans still need their owner's approval. See [intake](docs/intake.md) for the mapping and flags.
 
+`metronome ado items` reads flat Azure Boards queries through `az`, ranks work items, and maps their
+owners, HTML descriptions, acceptance criteria, tags and repository markers. Assigned and non-ready
+work is skipped by intake. See [Azure DevOps intake](docs/intake.md#built-in-azure-devops).
+
 `metronome publish` mirrors workstream transitions back to a source command with a durable cursor.
 `metronome github publish` updates a GitHub Project Status without replacing a value changed by a person
 between runs, comments with PR links, marks claims and closes done issues. See the
@@ -78,6 +82,7 @@ export PATH="$PWD:$PATH"
 ./metronome intake --workstream example --every 10m -- ./backlog-from-source.sh
 ./metronome workstream create metronome
 metronome intake --workstream metronome --every 10m -- metronome github issues --repo OWNER/NAME --project OWNER/N --rank-field Rank
+metronome intake --workstream default -- metronome ado items --org https://dev.azure.com/example --project acme --wiql ready.wiql --owner pat
 ./metronome workstream set example --execute 2
 ./metronome workstream list
 ./metronome board --workstream example
