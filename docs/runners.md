@@ -189,6 +189,9 @@ A person or service runs the GitHub poller, with `gh` signed in:
 metronome --as github github poll --every 1m
 ```
 
+A shared service can use a [GitHub App installation](github-app.md) instead; Metronome refreshes its tokens
+and does not pass the App private key settings to runner commands.
+
 Pass `--adopt-repo OWNER/NAME` (repeatable) to discover open PRs with configured workstream adoption labels.
 The poller also adopts PRs named by Ready source items without this flag.
 

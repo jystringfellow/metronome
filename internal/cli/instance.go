@@ -90,13 +90,21 @@ type prefixedOutput struct {
 	writer  io.Writer
 	prefix  string
 	pending bytes.Buffer
+	redact  func(string) string
+}
+
+func (w *prefixedOutput) text() string {
+	if w.redact != nil {
+		return w.redact(w.pending.String())
+	}
+	return w.pending.String()
 }
 
 func (w *prefixedOutput) Write(data []byte) (int, error) {
 	for _, line := range bytes.SplitAfter(data, []byte("\n")) {
 		w.pending.Write(line)
 		if bytes.HasSuffix(line, []byte("\n")) {
-			if _, err := fmt.Fprintf(w.writer, "%s: %s", w.prefix, w.pending.String()); err != nil {
+			if _, err := fmt.Fprintf(w.writer, "%s: %s", w.prefix, w.text()); err != nil {
 				return 0, err
 			}
 			w.pending.Reset()
@@ -107,7 +115,7 @@ func (w *prefixedOutput) Write(data []byte) (int, error) {
 
 func (w *prefixedOutput) flush() {
 	if w.pending.Len() > 0 {
-		fmt.Fprintf(w.writer, "%s: %s\n", w.prefix, w.pending.String())
+		fmt.Fprintf(w.writer, "%s: %s\n", w.prefix, w.text())
 		w.pending.Reset()
 	}
 }
@@ -119,13 +127,16 @@ func (a *app) instanceLoops(cfg instance.Config) []supervise.Loop {
 		client := *a.client
 		client.Actor = schedule.Actor
 		local.client = &client
-		out := &prefixedOutput{writer: a.out, prefix: name}
-		errOut := &prefixedOutput{writer: a.errOut, prefix: name}
+		out := &prefixedOutput{writer: a.out, prefix: name, redact: a.redact}
+		errOut := &prefixedOutput{writer: a.errOut, prefix: name, redact: a.redact}
 		local.out, local.errOut = out, errOut
 		loops = append(loops, supervise.Loop{Name: name, Every: schedule.Interval(), Round: func(ctx context.Context) error {
 			defer out.flush()
 			defer errOut.flush()
-			return round(ctx, &local)
+			if err := round(ctx, &local); err != nil {
+				return fmt.Errorf("%s", a.redact(err.Error()))
+			}
+			return nil
 		}})
 	}
 	for _, ws := range cfg.Workstreams {

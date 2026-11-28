@@ -42,7 +42,14 @@ func (g GH) call(ctx context.Context, args ...string) ([]byte, error) {
 	if g.Run != nil {
 		return g.Run(ctx, args...)
 	}
-	return runGH(ctx, args...)
+	data, err := runGH(ctx, g.Environ, args...)
+	if err != nil && g.Redact != nil {
+		return nil, fmt.Errorf("%s", g.Redact(err.Error()))
+	}
+	if g.Holds != nil && g.Holds(data) {
+		return nil, fmt.Errorf("gh output contains a GitHub App credential")
+	}
+	return data, err
 }
 
 func (g GH) scanProject(ctx context.Context, project Project, field string) (projectBoard, error) {

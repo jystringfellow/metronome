@@ -66,7 +66,7 @@ func (a *app) intake(ctx context.Context, args []string) error {
 	defer ticker.Stop()
 	for ctx.Err() == nil {
 		if err := round(ctx); err != nil && ctx.Err() == nil {
-			fmt.Fprintf(a.errOut, "intake: %v\n", err)
+			fmt.Fprintf(a.errOut, "intake: %s\n", a.redact(err.Error()))
 		}
 		select {
 		case <-ctx.Done():
@@ -101,10 +101,22 @@ func (a *app) intakeOnce(ctx context.Context, ws string, args []string) error {
 	}
 	var stdout bytes.Buffer
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
-	cmd.Env = append(os.Environ(), "METRONOME_WORKSTREAM="+ws, "METRONOME_ITEMS="+file.Name())
-	cmd.Stdout, cmd.Stderr = &stdout, a.errOut
+	cmd.Env, err = a.childEnv(ctx, "METRONOME_WORKSTREAM="+ws, "METRONOME_ITEMS="+file.Name())
+	if err != nil {
+		return err
+	}
+	stderr := &redactingOutput{writer: a.errOut, redact: a.redact}
+	cmd.Stdout, cmd.Stderr = &stdout, stderr
 	cmd.WaitDelay = 5 * time.Second
-	if err := cmd.Run(); err != nil {
+	runErr := cmd.Run()
+	flushErr := stderr.flush()
+	if a.holds(stdout.Bytes()) {
+		return fmt.Errorf("command output contains the GitHub App token")
+	}
+	if flushErr != nil {
+		return flushErr
+	}
+	if err := runErr; err != nil {
 		var exit *exec.ExitError
 		if errors.As(err, &exit) {
 			return fmt.Errorf("command exited %d", exit.ExitCode())

@@ -48,7 +48,7 @@ func (a *app) publish(ctx context.Context, args []string) error {
 	defer ticker.Stop()
 	for ctx.Err() == nil {
 		if err := round(ctx); err != nil && ctx.Err() == nil {
-			fmt.Fprintf(a.errOut, "publish: %v\n", err)
+			fmt.Fprintf(a.errOut, "publish: %s\n", a.redact(err.Error()))
 		}
 		select {
 		case <-ctx.Done():
@@ -100,14 +100,26 @@ func (a *app) publishBatch(ctx context.Context, path string, batch api.PublishBa
 		}
 	}
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = &input, a.out, a.errOut
-	cmd.Env = append(os.Environ(), "METRONOME_WORKSTREAM="+batch.Workstream, "METRONOME_PUBLISHER="+batch.Publisher, "METRONOME_PUBLISHER_STATE="+file)
+	stdout := &redactingOutput{writer: a.out, redact: a.redact}
+	stderr := &redactingOutput{writer: a.errOut, redact: a.redact}
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = &input, stdout, stderr
+	cmd.Env, err = a.childEnv(ctx, "METRONOME_WORKSTREAM="+batch.Workstream, "METRONOME_PUBLISHER="+batch.Publisher, "METRONOME_PUBLISHER_STATE="+file)
+	if err != nil {
+		return fmt.Errorf("%w; cursor stays at %d", err, batch.Cursor)
+	}
 	cmd.WaitDelay = 5 * time.Second
 	runErr := cmd.Run()
+	flushOut, flushErr := stdout.flush(), stderr.flush()
+	if runErr == nil {
+		runErr = errors.Join(flushOut, flushErr)
+	}
 	state, err := os.ReadFile(file)
 	var compact bytes.Buffer
 	if err == nil && (len(state) > flow.MaxPublisherState || json.Compact(&compact, state) != nil) {
 		err = fmt.Errorf("invalid publisher state")
+	}
+	if a.holds(state) {
+		err = fmt.Errorf("publisher state contains the GitHub App token")
 	}
 	req := api.PublisherAdvanceRequest{After: batch.Cursor, Seq: batch.Cursor}
 	if err == nil && !bytes.Equal(compact.Bytes(), initial) {

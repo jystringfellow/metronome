@@ -73,6 +73,17 @@ const prRecord = `{"seq":2,"item_id":"I1","slice_id":"I1.1","ref":"MET-18","tran
 const reviewRecord = `{"seq":3,"item_id":"I1","slice_id":"I1.1","ref":"acme/app#7","transition":"in_review"}` + "\n"
 const doneRecord = `{"seq":4,"item_id":"I1","ref":"acme/app#7","transition":"done"}` + "\n"
 
+func TestPublisherAppAssigneeHint(t *testing.T) {
+	options := publisherOptions(t)
+	options.Assignee = ""
+	gh, done := exchanges(t, []ghExchange{projectCall(publishPage("Ready", "OPEN", "[]", "[]")), {args: []string{"api", "user", "--jq", ".login"}, err: errors.New("login unavailable")}})
+	var out, notes bytes.Buffer
+	if err := gh.Publish(context.Background(), options, strings.NewReader(""), &out, &notes); err == nil || !strings.Contains(err.Error(), "--assignee LOGIN") {
+		t.Fatal("missing App assignee hint", err)
+	}
+	done()
+}
+
 func TestPublisherAdoptedSourceIssue(t *testing.T) {
 	options := publisherOptions(t)
 	label := "metronome:claimed:laptop-a"

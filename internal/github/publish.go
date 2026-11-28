@@ -160,7 +160,7 @@ func (g GH) Publish(ctx context.Context, options PublishOptions, input io.Reader
 	if options.Assignee == "" {
 		data, err := g.call(ctx, "api", "user", "--jq", ".login")
 		if err != nil {
-			return err
+			return fmt.Errorf("could not read the signed-in login (give --assignee LOGIN; required with a GitHub App): %w", err)
 		}
 		options.Assignee = strings.TrimSpace(string(data))
 		if options.Assignee == "" {

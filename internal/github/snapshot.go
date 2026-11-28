@@ -4,10 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/jystringfellow/metronome/internal/githubapp"
 )
 
 type PRState string
@@ -61,30 +64,49 @@ type Source interface {
 }
 
 type GH struct {
-	Run func(ctx context.Context, args ...string) ([]byte, error)
+	Run     func(ctx context.Context, args ...string) ([]byte, error)
+	Environ func(context.Context, []string) ([]string, error)
+	Redact  func(string) string
+	Holds   func([]byte) bool
 }
 
 const prFields = "number,headRefOid,isDraft,state,updatedAt,mergedBy,reviews,statusCheckRollup,commits"
 
 func (g GH) PRForBranch(ctx context.Context, repo, branch string) (*Snapshot, error) {
-	run := g.Run
-	if run == nil {
-		run = runGH
-	}
-	out, err := run(ctx, "pr", "list", "--repo", repo, "--head", branch, "--state", "all", "--limit", "10", "--json", prFields)
+	out, err := g.call(ctx, "pr", "list", "--repo", repo, "--head", branch, "--state", "all", "--limit", "10", "--json", prFields)
 	if err != nil {
 		return nil, err
 	}
 	return ParsePRList(repo, out)
 }
 
-func runGH(ctx context.Context, args ...string) ([]byte, error) {
+func runGH(ctx context.Context, environ func(context.Context, []string) ([]string, error), args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "gh", args...)
+	var token string
+	if environ != nil {
+		var err error
+		cmd.Env, err = environ(ctx, os.Environ())
+		if err != nil {
+			return nil, fmt.Errorf("github app token: %s", githubapp.Redact(err.Error()))
+		}
+		for _, entry := range cmd.Env {
+			if value, ok := strings.CutPrefix(entry, "GH_TOKEN="); ok {
+				token = value
+			}
+		}
+	}
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("gh %s: %w: %s", strings.Join(args[:2], " "), err, strings.TrimSpace(stderr.String()))
+		message := fmt.Sprintf("gh %s: %v: %s", strings.Join(args[:2], " "), err, strings.TrimSpace(stderr.String()))
+		if token != "" {
+			message = strings.ReplaceAll(message, token, "[redacted]")
+		}
+		return nil, fmt.Errorf("%s", githubapp.Redact(message))
+	}
+	if token != "" && strings.Contains(string(out), token) {
+		return nil, fmt.Errorf("gh output contains the GitHub App token")
 	}
 	return out, nil
 }

@@ -73,11 +73,7 @@ func ParsePR(repo string, data []byte) (*PullRequest, error) {
 }
 
 func (g GH) PR(ctx context.Context, repo string, number int) (*PullRequest, error) {
-	run := g.Run
-	if run == nil {
-		run = runGH
-	}
-	data, err := run(ctx, "pr", "view", strconv.Itoa(number), "--repo", repo, "--json", prFields+",title,body,author,headRefName,headRepository,headRepositoryOwner,isCrossRepository,labels,url")
+	data, err := g.call(ctx, "pr", "view", strconv.Itoa(number), "--repo", repo, "--json", prFields+",title,body,author,headRefName,headRepository,headRepositoryOwner,isCrossRepository,labels,url")
 	if err != nil {
 		if strings.Contains(err.Error(), "Could not resolve to a PullRequest with the number of "+strconv.Itoa(number)+".") {
 			return nil, nil
@@ -95,11 +91,7 @@ func (g GH) PR(ctx context.Context, repo string, number int) (*PullRequest, erro
 }
 
 func (g GH) LabelledPRs(ctx context.Context, repo, label string) ([]LabelledPR, error) {
-	run := g.Run
-	if run == nil {
-		run = runGH
-	}
-	data, err := run(ctx, "pr", "list", "--repo", repo, "--label", label, "--state", "open", "--limit", "1000", "--json", "number,isCrossRepository,labels")
+	data, err := g.call(ctx, "pr", "list", "--repo", repo, "--label", label, "--state", "open", "--limit", "1000", "--json", "number,isCrossRepository,labels")
 	if err != nil {
 		return nil, err
 	}

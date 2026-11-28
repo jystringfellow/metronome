@@ -51,6 +51,8 @@ instances use `metronome serve --db-env METRONOME_DB --config instance.json` wit
 ## Secrets and commands
 
 Supply credentials such as `GH_TOKEN` through the environment of `serve` using the operator's secret store.
+Alternatively configure a [GitHub App](github-app.md): commands receive refreshed installation tokens
+through `GH_TOKEN`, without inheriting the App private key settings.
 Never put secret values in the file or command arguments. There is no `env` or token field. Commands inherit
 the service environment and the existing [intake and publish](intake.md) variables. Arguments are passed
 directly to the executable, without shell expansion. An explicit `sh -c` is the operator's choice; scripts
