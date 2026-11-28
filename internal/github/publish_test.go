@@ -26,7 +26,7 @@ type ghExchange struct {
 func exchanges(t *testing.T, expected []ghExchange) (GH, func()) {
 	t.Helper()
 	index := 0
-	return GH{Run: func(_ context.Context, args ...string) ([]byte, error) {
+	run := func(_ context.Context, args ...string) ([]byte, error) {
 		t.Helper()
 		if index >= len(expected) {
 			t.Fatalf("unexpected gh args: %q", args)
@@ -37,12 +37,14 @@ func exchanges(t *testing.T, expected []ghExchange) (GH, func()) {
 			t.Fatalf("call %d: got %q, want %q", index, args, call.args)
 		}
 		return []byte(call.response), call.err
-	}}, func() {
+	}
+	done := func() {
 		t.Helper()
 		if index != len(expected) {
 			t.Fatalf("made %d of %d calls", index, len(expected))
 		}
 	}
+	return GH{Run: run}, done
 }
 
 func projectCall(response string) ghExchange {
