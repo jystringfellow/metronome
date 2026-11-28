@@ -42,10 +42,11 @@ open.
 - Run the same store contract for memory, SQLite and PostgreSQL, including intra-batch duplicate refusal.
   PostgreSQL integration tests use isolated schemas in `METRONOME_TEST_POSTGRES_URL` and explicitly skip
   when it is unset.
+- CI runs the whole suite against a PostgreSQL service in its own job, which fails if the PostgreSQL tests
+  were skipped (added outside the sandbox, 2026-11-28).
 
 ## Open (2026-11-28): PostgreSQL store follow-up
 
-- Whether to add a PostgreSQL service to CI (the maintainer installs workflows).
 - Whether fencing should exit the process, or startup should wait for the lock for rolling deployments.
 - Whether SQLite should gain a versioned schema, and whether to support PostgreSQL keyword/value DSNs.
 - Whether to change pgx's default TLS mode (`prefer`), support reverse migration to SQLite, or template
