@@ -1,4 +1,4 @@
-# Writing an intake command
+# Writing intake and publish commands
 
 The source owns the backlog. Metronome holds the Ready queue and the record of work in progress.
 Run a command that reads the source using its own credentials:
@@ -42,10 +42,8 @@ round exits nonzero; periodic intake continues after errors. Interrupting period
 
 ## Shared sources and claims
 
-The source command may use its own credentials to publish claims (for example, an assignee or an
-instance-specific label) for items in Plan or later, using `METRONOME_ITEMS`. It can also use the snapshot
-to close or hide completed work, or clear its own markers when appropriate. Metronome never writes to
-the source itself. When reading the source, set `claimed_by` to a nonempty claimant name for items claimed
+The publisher command uses its own credentials to mark claims and clear its own markers when work finishes.
+Metronome's core never writes to the source itself. When reading the source, set `claimed_by` to a nonempty claimant name for items claimed
 by somebody else, and leave it empty or absent for unclaimed items and this instance's own markers.
 
 ```json
@@ -56,6 +54,13 @@ Both local and hosted instances apply the same claim rule. Intake skips foreign 
 it shelves already-Ready items claimed elsewhere. An item in Plan or later remains held locally and a
 person must resolve a conflicting claim. A periodic snapshot is not a distributed lock: two instances can
 take an unmarked item before either publishes its marker. Resolving that race remains open.
+
+For GitHub, give each installation a distinct `--instance` name, and use that same name with both
+`github issues` and `github publish`. The publisher adds `metronome:claimed:INSTANCE` on the first slice
+claim. Intake treats every such label except its own as a foreign claim (without `--instance`, all are
+foreign). Assignees alone do not indicate a claim. The publisher removes its label on done or dropped,
+and removes the assignee only if it added that assignment itself. This works for several local instances,
+or local and hosted instances sharing one source; it does not eliminate the race before a marker appears.
 
 ## Mirror rules
 
@@ -98,6 +103,7 @@ come last. Ties and issues without a project are ordered oldest first, then by i
 | `title` | Issue title. |
 | `intent` | First prose paragraph, condensed to one line and capped at 500 characters; empty for no body. |
 | `owner` | First assignee's login, otherwise `--owner`. |
+| `claimed_by` | Sorted, comma-separated instance names from foreign `metronome:claimed:INSTANCE` labels. |
 | `predicted_tier` | A `tier:N` label (0–3), omitted when absent. |
 | `slices` | One slice with the same title and repository, no dependencies or named approvers. |
 | `criteria` | List items in an Acceptance criteria heading's section, otherwise markdown task-list items. Wrapped text is joined, including checked tasks. |
@@ -105,7 +111,7 @@ come last. Ties and issues without a project are ordered oldest first, then by i
 Pull requests, non-issue or unreadable project items, and project items from other repositories are skipped.
 Missing owners, invalid or conflicting tier labels, duplicate refs, missing or nonnumeric project fields,
 and failed reads exit nonzero without printing backlog JSON. With no matching issues, `items` is empty.
-The built-in command is read-only, publishes no claims, and does not contact the Metronome service.
+The built-in intake command is read-only, reads claims written by `github publish`, and does not contact the Metronome service.
 
 ## Example: writing another source command
 
@@ -126,3 +132,117 @@ gh issue list --repo acme/app --label ready --limit 1000 --json number,title,bod
 
 If more issues exist than the command can read, treat that as a failure or paginate to completion rather
 than returning a truncated list.
+
+## Publishing back to the source
+
+```sh
+metronome publish --workstream example --name board --every 1m -- ./publish-to-source.sh
+```
+
+The named workstream must exist. Each name has a durable cursor scoped to that workstream. A new name
+starts at the beginning of the log. Use one running command per name; a concurrent cursor advance is
+rejected, but commands may already have made external changes. The service hands the publisher transitions
+in batches of at most `--batch` (default 100, range 1–1000), except that transitions from one event are never
+split across batches. One round drains available batches and never invokes a command for an empty batch.
+Without `--every`, or with `--every 0`, it runs once. A positive interval runs immediately and periodically
+until interrupted. Do not use `--request-id`.
+
+The command reads one JSON object per line on stdin. Its stdout and stderr pass through. Only a successful
+exit with valid publisher state advances the cursor. Failure leaves the cursor unchanged, and the next round
+offers the same transitions again (at-least-once delivery). Periodic runs continue after failures; one-shot
+runs exit nonzero. Commands must make repeated delivery safe.
+
+Along with the caller's environment, the command receives:
+
+- `METRONOME_WORKSTREAM`: the workstream name.
+- `METRONOME_PUBLISHER`: the publisher name.
+- `METRONOME_PUBLISHER_STATE`: a private temporary file containing the publisher's opaque JSON state, initially
+  `null`. Write a replacement JSON value (at most 256 KiB) here, preferably by atomic rename. The service commits
+  valid changed state even when the command fails or is interrupted, without advancing the cursor in that case.
+  Saving state has a separate five-second timeout so an interrupted round can finish recording its progress. The file is removed
+  after the round. Never put credentials in it: state is stored in the event log.
+
+## Transition contract
+
+The stream is additive-only: ignore unknown fields and transition names. Names describe state changes, not
+internal events. Ready items added, shelved or restored by intake do not produce transitions. Sort by emission
+order, not timestamp; sequence values can repeat for several transitions caused by one event. Deduplicate
+using `(seq, transition, slice_id)` within a workstream's stream. Slice changes precede item changes for the
+same event; ask changes follow them.
+
+```json
+{"seq":42,"at":"2026-11-27T10:00:00Z","workstream":"example","item_id":"I3","ref":"acme/app#7","slice_id":"I3.1","transition":"pr_open","from":"submitted","pr":{"repo":"acme/app","number":12,"head":"abc123"},"actor":"github"}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `seq`, `at` | Log sequence and event time (RFC 3339). |
+| `workstream`, `item_id`, `ref` | Workstream, local item ID and source reference. |
+| `transition`, `from` | Transition name; previous status (omitted for asks). |
+| `actor` | Who recorded the change. |
+| `slice_id` | Present for slices and asks about slices. |
+| `pr` | When known for a slice: `repo`, `number`, `head`. |
+| `runner`, `branch` | Runner on claim; branch on submission. |
+| `ask` | On ask transitions: `id`, `type`, `question`, `owner`, and `answer` when answered. |
+
+| Transition | Meaning |
+| --- | --- |
+| `planning`, `ready` | Plan started or returned to Ready. |
+| `executing` | Plan approved or release approval withdrawn. |
+| `awaiting_release`, `releasing` | Waiting for or holding a Release slot. |
+| `done`, `dropped` | Item finished or abandoned. |
+| `claimed`, `submitted` | Slice claimed or submitted. |
+| `pr_open`, `in_review`, `approved`, `merged` | PR stages, including return to PR open on approval withdrawal. |
+| `rework` | Failed checks or requested changes. |
+| `stalled`, `parked`, `flagged` | Slice waiting, returned to queue, or flagged. |
+| `asked`, `answered`, `ask_timed_out` | Human ask raised, resolved or timed out. |
+
+## Writing a publisher
+
+A publisher owns the source workflow and credentials. For example, this command consumes the stream and
+prints the source reference and transition for another integration to handle:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+while IFS= read -r transition; do
+  printf '%s\n' "$transition" | jq -er '[.ref, .transition] | @tsv'
+done
+```
+
+An actual source adapter should exit nonzero on a failed write, keep its own last-written values in the state
+file, and use repeat-safe source operations. Do not acknowledge partial work as complete.
+
+## Built in: GitHub Project publisher
+
+```sh
+metronome publish --workstream example --name board --every 1m -- metronome github publish --project acme/3 --instance laptop-a
+```
+
+The command uses `gh` and requires project write access (`gh auth refresh -s project`) and issue write access.
+It resolves issues by `OWNER/NAME#N` or by a unique `Metronome: REF` line in a project issue's body. Unmatched
+or ambiguous body refs are reported and skipped. An issue addressed directly outside the project can still
+receive claims, PR comments and closure, but its Status is skipped. Failed reads or writes and missing project
+fields or options fail the round. `--status-field` names the single-select field (default `Status`).
+
+| Default Status | Transitions |
+| --- | --- |
+| Ready | `planning`, `ready` |
+| In progress | `claimed`, `submitted`, `pr_open`, `rework` |
+| In review | `in_review`, `approved` |
+| Done | `done` |
+
+All others leave Status alone. Use repeatable `--map TRANSITION=OPTION` to override the mapping, or
+`--map TRANSITION=` to unmap one. For items with several slices, the latest mapped transition wins.
+The publisher reads the board at the start of each invocation. It stores the last Status it wrote (or adopted
+when already equal) next to the cursor, not in a GitHub field or a machine-local file. If the board differs
+from that value, it leaves the human edit alone, even if it happens to match the next mapped target. On the
+first observation a matching target can be adopted without a write. This protects
+edits between runs; a human edit racing a write within the same round is not an atomic compare-and-set.
+
+The first record carrying a distinct PR adds a comment linking it, with a marker to prevent duplicate comments
+on retries. `claimed` adds the instance label and assigns the issue to `--assignee` (default the `gh` login).
+On `done` the issue is closed as completed; `done` and `dropped` clear this instance's claim. Completed
+transition keys are kept in publisher state to avoid replaying successful operations in a partially failed batch.
+Running `github publish` directly without the state file is supported but warns that last-written values will
+not persist; use `metronome publish` for normal operation.

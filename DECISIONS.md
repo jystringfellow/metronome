@@ -454,10 +454,57 @@ Recorded so the data model leaves room for it. Nothing here is in the proof of c
 
 ## Open (2026-11-27): GitHub Issues intake follow-up
 
-- Should an assignee or label mark an external claim when multiple instances share a repository?
+- Resolved below: an instance-specific label marks external claims; an assignee alone does not.
 - Should approvers or multiple slices (such as sub-issues) come from the issue?
 - Should value come from a project field?
 - Should the label filter support multiple labels (OR)?
+
+## Decided by the maintainer (2026-11-27): publish mirrors intake
+
+Metronome hands workstream transitions to the source's own command, which updates the source's workflow.
+This refines the November 26 decision that mirroring status back is the team's own skill or plugin: the
+core still never writes to a source or holds its credentials. The GitHub publisher is one such command.
+
+## Agent decision (2026-11-27): implementing publish
+
+- Derive flat transition names from status differences while applying events, with separate ask transitions.
+  Existing events keep their meaning; live and replayed transitions use the same derivation.
+- A new `publisher_advanced` event stores a sequence cursor per workstream and publisher. Advance uses
+  compare-and-set; batches have a bound but never split one event. Rounds drain batches and skip empty runs.
+- Keep opaque publisher JSON beside the cursor, limited to 256 KiB. Save changed valid state even on command
+  failure, without advancing its cursor. This lets the GitHub publisher preserve last-written Status across
+  machines and partially failed batches without a new field, a hidden comment before a PR, or an unreliable
+  inference from the GitHub user (who can also edit the board) or the current mapping.
+- Claims use `metronome:claimed:INSTANCE` labels; each instance uses the same name on intake and publish.
+  Assign on claim and remove only assignments the publisher made. One hidden PR marker per distinct PR
+  prevents duplicate comments. Keep a completed-transition watermark with keys at its last sequence so
+  terminal state can be pruned without replaying completed claim and Status writes after partial failure.
+- Default mapping: planning and ready → Ready; claimed, submitted, pr_open and rework → In progress;
+  in_review and approved → In review; done → Done. Latest mapped transition wins for multi-slice items.
+  Adopt an already matching Status on first observation; otherwise only change a value matching the last-written
+  value. Do not adopt a later human edit even if it matches a mapped target: doing so would give subsequent
+  transitions permission to overwrite the edit. Report unresolved or ambiguous body references and skip;
+  fail on configuration and gh errors.
+- Review follow-up (2026-11-27): save changed publisher state after an interrupted command using a separate,
+  five-second commit context. Only successful commands advance the cursor. Parking a slice already in rework
+  publishes `parked`, not another `rework` transition. Keep publisher state out of the generic State JSON.
+
+## Open (2026-11-27): publish follow-up
+
+- How should a publisher recover if it changed an issue but Metronome was killed before committing its state,
+  or the advance POST failed (service unavailable or five-second timeout)? On replay, the publisher can mistake
+  its own Status for a human edit and stop updating it, or leave its assignee on the issue after completion.
+  Should a person reconcile the issue, or should replay adopt a Status matching the transition's target?
+- The race before a claim marker appears remains open. Concurrent publishers or a person editing during
+  a GitHub write are not protected by a source-side atomic compare-and-set.
+- Should a new publisher be able to start at the current end of the log?
+- How should Status aggregate for multi-slice items?
+- Should publish commands have a timeout, and should publisher state expire? Each state-saving cursor event
+  stores the complete opaque state, so the log can grow by up to 256 KiB per such event.
+- How should a publisher recover from a permanently inaccessible direct issue ref (deleted or transferred)?
+  For now a failed direct issue read retries the round: a missing issue and insufficient permissions are not
+  always distinguishable, and incomplete reads must not be acknowledged as success.
+- On merge, link the publish contract from `docs/runners.md` and list it with the other additive-only contracts.
 
 ## Decided by the maintainer (2026-11-27): slices can depend on other slices
 
