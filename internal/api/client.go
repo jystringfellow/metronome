@@ -18,6 +18,14 @@ type Client struct {
 	HTTP    *http.Client
 }
 
+type StatusError struct {
+	Code int
+	Err  error
+}
+
+func (e *StatusError) Error() string { return e.Err.Error() }
+func (e *StatusError) Unwrap() error { return e.Err }
+
 func (c *Client) Get(ctx context.Context, path string, out any) error {
 	return c.do(ctx, http.MethodGet, path, "", nil, out)
 }
@@ -56,15 +64,19 @@ func (c *Client) do(ctx context.Context, method, path, requestID string, body, o
 	}
 	defer resp.Body.Close()
 	data, err := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 300 {
+		if err == nil {
+			var fe flow.Error
+			if json.Unmarshal(data, &fe) == nil && fe.Code != "" {
+				err = &fe
+			} else {
+				err = fmt.Errorf("%s %s: %s: %s", method, path, resp.Status, strings.TrimSpace(string(data)))
+			}
+		}
+		return &StatusError{Code: resp.StatusCode, Err: err}
+	}
 	if err != nil {
 		return err
-	}
-	if resp.StatusCode >= 300 {
-		var fe flow.Error
-		if json.Unmarshal(data, &fe) == nil && fe.Code != "" {
-			return &fe
-		}
-		return fmt.Errorf("%s %s: %s: %s", method, path, resp.Status, strings.TrimSpace(string(data)))
 	}
 	if out == nil {
 		return nil

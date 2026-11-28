@@ -3,8 +3,11 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -22,6 +25,14 @@ import (
 type exitStatus int
 
 func (status exitStatus) Error() string { return fmt.Sprintf("command exited %d", status) }
+
+const (
+	closeInitialDelay   = time.Second
+	closeMaxDelay       = 30 * time.Second
+	closeLeaseGrace     = time.Minute
+	closeBound          = 30 * time.Minute
+	closeAttemptTimeout = 10 * time.Second
+)
 
 func (a *app) run(ctx context.Context, args []string) error {
 	separator := slices.Index(args, "--")
@@ -105,12 +116,12 @@ func (a *app) runClaim(ctx context.Context, b brief, runner string, every time.D
 	}
 	started = true
 	renewCtx, stopRenewing := context.WithCancel(context.WithoutCancel(ctx))
-	renewed := make(chan bool, 1)
-	go func() { renewed <- a.renew(renewCtx, runID, every) }()
+	renewed := make(chan renewal, 1)
+	go func() { renewed <- a.renew(renewCtx, runID, every, b.Claim.LeaseUntil) }()
 	code := a.waitCommand(ctx, cmd, signals, terminal)
 	stopRenewing()
-	closed := <-renewed
-	if !closed {
+	lease := <-renewed
+	if !lease.closed {
 		var branch, reason string
 		if code == 0 {
 			branch = a.readBranch(branchPath)
@@ -118,7 +129,7 @@ func (a *app) runClaim(ctx context.Context, b brief, runner string, every time.D
 		} else {
 			reason = exitStatus(code).Error()
 		}
-		if err := a.closeRun(ctx, runID, branch, reason); err != nil && code == 0 {
+		if err := a.closeAfterExit(ctx, b, runner, branch, reason, lease.until, signals); err != nil && code == 0 {
 			code = 1
 		}
 	}
@@ -181,21 +192,40 @@ func (a *app) waitCommand(ctx context.Context, cmd *exec.Cmd, signals <-chan os.
 	}
 }
 
-func (a *app) renew(ctx context.Context, runID string, every time.Duration) bool {
+type renewal struct {
+	closed bool
+	until  time.Time
+}
+
+func (a *app) renew(ctx context.Context, runID string, every time.Duration, leaseUntil time.Time) renewal {
 	ticker := time.NewTicker(every)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
-			return false
+			return renewal{until: leaseUntil}
 		case <-ticker.C:
-			err := a.client.Post(ctx, "/v1/runs/"+runID+"/heartbeat", "", api.ReportRequest{}, nil)
+			var result flow.Result
+			err := a.client.Post(ctx, "/v1/runs/"+runID+"/heartbeat", "", api.ReportRequest{}, &result)
 			if flow.CodeOf(err) == flow.CodeConflict {
 				fmt.Fprintf(a.errOut, "metronome run: run %s is closed; stopped renewing: %v\n", runID, err)
-				return true
+				return renewal{closed: true, until: leaseUntil}
 			}
 			if err != nil && ctx.Err() == nil {
 				fmt.Fprintf(a.errOut, "metronome run: renew %s: %v\n", runID, err)
+			}
+			if err == nil {
+				for _, event := range result.Events {
+					if event.Type != flow.EvHeartbeat {
+						continue
+					}
+					var heartbeat struct {
+						LeaseUntil time.Time `json:"lease_until"`
+					}
+					if json.Unmarshal(event.Data, &heartbeat) == nil && !heartbeat.LeaseUntil.IsZero() {
+						leaseUntil = heartbeat.LeaseUntil
+					}
+				}
 			}
 		}
 	}
@@ -217,26 +247,145 @@ func (a *app) readBranch(path string) string {
 	return branch
 }
 
-func (a *app) closeRun(ctx context.Context, runID, branch, reason string) error {
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
-	defer cancel()
-	action, message := "release", fmt.Sprintf("dropped %s (%s)", runID, reason)
-	attempt := "drop"
-	var body any
-	if branch != "" {
-		action, message = "submit", fmt.Sprintf("submitted %s on %s", runID, branch)
-		attempt = "submit on " + branch
-		body = api.SubmitRequest{Branch: branch}
+func waitDelay(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
 	}
-	err := a.client.Post(ctx, "/v1/runs/"+runID+"/"+action, "", body, nil)
+}
+
+type runClose struct {
+	runID, action, target, wanted, message string
+	body                                   any
+}
+
+func newRunClose(runID, branch, reason string) runClose {
+	if branch != "" {
+		return runClose{runID: runID, action: "submit", target: runID + " on " + branch, wanted: "submit on " + branch,
+			message: fmt.Sprintf("submitted %s on %s", runID, branch), body: api.SubmitRequest{Branch: branch}}
+	}
+	return runClose{runID: runID, action: "release", target: runID, wanted: "drop", message: fmt.Sprintf("dropped %s (%s)", runID, reason)}
+}
+
+func (a *app) closeAttempt(ctx context.Context, close runClose, requestID string) error {
+	ctx, cancel := context.WithTimeout(ctx, closeAttemptTimeout)
+	defer cancel()
+	err := a.client.Post(ctx, "/v1/runs/"+close.runID+"/"+close.action, requestID, close.body, nil)
+	if err == nil {
+		fmt.Fprintln(a.errOut, "metronome run: "+close.message)
+	}
+	return err
+}
+
+func (a *app) reportCloseError(close runClose, err error) error {
 	if flow.CodeOf(err) == flow.CodeConflict {
-		fmt.Fprintf(a.errOut, "metronome run: run %s was already closed (wanted to %s): %v\n", runID, attempt, err)
+		fmt.Fprintf(a.errOut, "metronome run: run %s was already closed (wanted to %s): %v\n", close.runID, close.wanted, err)
 		return nil
 	}
 	if err != nil {
-		fmt.Fprintf(a.errOut, "metronome run: could not %s run %s: %v\n", action, runID, err)
-		return err
+		fmt.Fprintf(a.errOut, "metronome run: could not %s run %s: %v\n", close.action, close.target, err)
 	}
-	fmt.Fprintln(a.errOut, "metronome run: "+message)
-	return nil
+	return err
+}
+
+func (a *app) closeRun(ctx context.Context, runID, branch, reason string) error {
+	close := newRunClose(runID, branch, reason)
+	return a.reportCloseError(close, a.closeAttempt(context.WithoutCancel(ctx), close, ""))
+}
+
+func (a *app) closeAfterExit(ctx context.Context, b brief, runner, branch, reason string, leaseUntil time.Time, signals <-chan os.Signal) error {
+	select {
+	case <-signals:
+	default:
+	}
+	ctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	watching := make(chan struct{})
+	go func() {
+		defer close(watching)
+		select {
+		case <-signals:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	defer func() {
+		cancel()
+		<-watching
+	}()
+	operation := newRunClose(b.Claim.RunID, branch, reason)
+	requestID := "metronome-run-" + b.Claim.RunID + "-close"
+	started := a.now()
+	leaseStop := leaseUntil.Add(closeLeaseGrace)
+	stop := started.Add(closeBound)
+	if leaseStop.Before(stop) {
+		stop = leaseStop
+	}
+	var err error
+	for delay := closeInitialDelay; ; delay = min(delay*2, closeMaxDelay) {
+		if ctx.Err() != nil {
+			err = ctx.Err()
+			break
+		}
+		err = a.closeAttempt(ctx, operation, requestID)
+		if err == nil {
+			return nil
+		}
+		var status *api.StatusError
+		if errors.As(err, &status) && status.Code < http.StatusInternalServerError {
+			if flow.CodeOf(err) == flow.CodeConflict {
+				readCtx, stopRead := context.WithTimeout(ctx, closeAttemptTimeout)
+				var run flow.Run
+				readErr := a.client.Get(readCtx, "/v1/runs/"+b.Claim.RunID, &run)
+				stopRead()
+				if readErr == nil && run.ClosedReason == flow.CloseLeaseExpired {
+					a.reportExpired(b, runner, branch, run.LeaseUntil)
+					if branch == "" {
+						return nil
+					}
+					return err
+				}
+			}
+			return a.reportCloseError(operation, err)
+		}
+		remaining := stop.Sub(a.now())
+		if remaining <= 0 || ctx.Err() != nil {
+			fmt.Fprintf(a.errOut, "metronome run: could not %s run %s: %v\n", operation.action, operation.target, err)
+			break
+		}
+		wait := min(delay, remaining)
+		fmt.Fprintf(a.errOut, "metronome run: could not %s run %s: %v; retrying in %s\n", operation.action, operation.target, err, wait)
+		if waitErr := a.wait(ctx, wait); waitErr != nil {
+			err = waitErr
+			break
+		}
+	}
+	if !a.now().Before(leaseStop) {
+		a.reportExpired(b, runner, branch, leaseUntil)
+	} else {
+		cause := "service unreachable"
+		if ctx.Err() != nil {
+			cause = "signal"
+		}
+		elapsed := a.now().Sub(started).Round(time.Second)
+		deadline := leaseUntil.UTC().Format(time.RFC3339)
+		if branch != "" {
+			fmt.Fprintf(a.errOut, "metronome run: gave up submitting run %s on branch %s after %s (%s); until %s run metronome submit %s --branch %s, after that claim slice %s again and submit branch %s\n", b.Claim.RunID, branch, elapsed, cause, deadline, b.Claim.RunID, branch, b.Claim.SliceID, branch)
+		} else {
+			fmt.Fprintf(a.errOut, "metronome run: gave up dropping run %s after %s (%s); run metronome drop %s, or let its lease expire at %s\n", b.Claim.RunID, elapsed, cause, b.Claim.RunID, deadline)
+		}
+	}
+	return err
+}
+
+func (a *app) reportExpired(b brief, runner, branch string, leaseUntil time.Time) {
+	deadline := leaseUntil.UTC().Format(time.RFC3339)
+	if branch != "" {
+		fmt.Fprintf(a.errOut, "metronome run: the lease on run %s expired at %s before the service answered, so branch %s was not submitted; claim slice %s again (metronome next --runner %s --slice %s) and submit branch %s under the new run\n", b.Claim.RunID, deadline, branch, b.Claim.SliceID, runner, b.Claim.SliceID, branch)
+	} else {
+		fmt.Fprintf(a.errOut, "metronome run: the lease on run %s expired at %s before the service answered; the service will close it as lease_expired, which stalls the slice as a drop would\n", b.Claim.RunID, deadline)
+	}
 }
