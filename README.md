@@ -91,10 +91,12 @@ metronome intake --workstream default -- metronome ado items --org https://dev.a
 
 Run `metronome help` for every command.
 
-While `serve` runs, open <http://127.0.0.1:7340/> for a read-only board showing limits, items, slices, open
-runs with lease time left, open asks and the latest events. It refreshes every few seconds from the same JSON
-API, ships inside the binary and changes nothing. The page and API are unauthenticated; keep the service on
-loopback.
+While `serve` runs, open <http://127.0.0.1:7340/> for a read-only board with workstream lanes, stage limits
+and usage, live lease countdowns, open asks and readable recent activity. Switch workstreams or filter by a
+label using links that update the page address, without changing capacity totals. All workstreams' live
+work appears before the compact, grouped Ready and shelved backlogs. The page refreshes every few seconds,
+highlights changes, ships inside the binary and changes nothing. The page and API are unauthenticated;
+keep the service on loopback.
 
 To wrap a coding agent and keep its lease alive until it finishes:
 
