@@ -12,6 +12,8 @@ The workstream must already exist. With a positive `--every`, intake runs immedi
 one round at a time, until interrupted (Ctrl-C or SIGTERM). Without it, or with `--every 0`, it runs once.
 Do not use `--request-id`: each round is idempotent by content rather than by reusing a request ID.
 
+To run these loops under `serve`, see [instance configuration](configuration.md).
+
 ## Command contract
 
 Print exactly one [backlog JSON object](backlog.md) on stdout, with a non-null `items` array in rank order.

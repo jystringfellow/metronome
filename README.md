@@ -12,6 +12,7 @@ Metronome is a design and an early proof of concept.
 - [docs/backlog.md](docs/backlog.md): the backlog JSON contract.
 - [docs/intake.md](docs/intake.md): writing source commands for scheduled intake and publishing.
 - [docs/operations.md](docs/operations.md): health checks, database backups and restore.
+- [docs/configuration.md](docs/configuration.md): declare workstreams and supervised loops in one file.
 - [docs/container.md](docs/container.md): running and extending the container image.
 - [docs/releasing.md](docs/releasing.md): publishing and signing releases.
 
@@ -111,6 +112,9 @@ keep the service on loopback or behind an authenticating proxy.
 
 For a hosted service, keep the board and API behind an authenticating proxy. See
 [running as a service](docs/operations.md) for probes and online backups.
+
+Run an instance from one file with `metronome serve --config instance.json`. It applies workstream settings
+and supervises intake, publish and GitHub polling. See [configuration](docs/configuration.md).
 
 To wrap a coding agent and keep its lease alive until it finishes:
 

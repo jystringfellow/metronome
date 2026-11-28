@@ -21,7 +21,9 @@ import (
 	"github.com/jystringfellow/metronome/internal/api"
 	"github.com/jystringfellow/metronome/internal/flow"
 	"github.com/jystringfellow/metronome/internal/github"
+	"github.com/jystringfellow/metronome/internal/instance"
 	"github.com/jystringfellow/metronome/internal/store"
+	"github.com/jystringfellow/metronome/internal/supervise"
 	"github.com/mattn/go-isatty"
 )
 
@@ -30,7 +32,7 @@ const defaultServer = "http://127.0.0.1:7340"
 const usage = `metronome: a flow record for AI delivery work
 
 Service:
-  serve [--addr 127.0.0.1:7340] [--db metronome.db] [--tick 30s]  board at /, probes at /healthz and /readyz
+  serve [--addr 127.0.0.1:7340] [--db metronome.db] [--tick 30s] [--config FILE]  board at /, probes at /healthz and /readyz
 
 Looking:
   board [--workstream NAME] [--label L] [--json]  limits, usage, items, slices, open runs and asks
@@ -264,8 +266,20 @@ func (a *app) serve(ctx context.Context, args []string) error {
 	addr := fs.String("addr", "127.0.0.1:7340", "")
 	dbPath := fs.String("db", "metronome.db", "")
 	tick := fs.Duration("tick", 30*time.Second, "")
+	configPath := fs.String("config", "", "")
 	if err := parse(fs, args, 0); err != nil {
 		return err
+	}
+	var cfg instance.Config
+	if *configPath != "" {
+		var err error
+		cfg, err = instance.Load(*configPath)
+		if err == nil {
+			err = cfg.ResolveActors(a.client.Actor)
+		}
+		if err != nil {
+			return usagef("config %s: %v", *configPath, err)
+		}
 	}
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -296,7 +310,18 @@ func (a *app) serve(ctx context.Context, args []string) error {
 		stop()
 		<-shutdownDone
 	}()
-	fmt.Fprintf(a.out, "metronome serving on http://%s with %s\n", ln.Addr(), *dbPath)
+	var loops []supervise.Loop
+	if *configPath != "" {
+		local := *a
+		local.client = &api.Client{BaseURL: "http://example.com", Actor: cfg.Actor, HTTP: api.LocalHTTP(svc)}
+		local.requestID = ""
+		local.out, local.errOut = synchronizedOutputs(a.out, a.errOut)
+		a = &local
+		loops = a.instanceLoops(cfg)
+		fmt.Fprintf(a.out, "metronome serving on http://%s with %s; config %s: %d workstream(s), %d loop(s)\n", ln.Addr(), *dbPath, *configPath, len(cfg.Workstreams), len(loops))
+	} else {
+		fmt.Fprintf(a.out, "metronome serving on http://%s with %s\n", ln.Addr(), *dbPath)
+	}
 	eng, err := flow.NewEngine(ctx, flow.DefaultConfig(), st, nil)
 	if err != nil {
 		stop()
@@ -304,6 +329,18 @@ func (a *app) serve(ctx context.Context, args []string) error {
 		return err
 	}
 	svc.Ready(eng, st)
+	if *configPath != "" {
+		if err := a.applyInstance(ctx, cfg); err != nil {
+			stop()
+			<-served
+			return fmt.Errorf("config %s: %w", *configPath, err)
+		}
+	}
+	loopsDone := make(chan struct{})
+	go func() {
+		defer close(loopsDone)
+		supervise.Run(ctx, loops, supervise.Options{Out: a.out, Err: a.errOut, Now: a.now, Wait: a.wait})
+	}()
 	tickDone := make(chan struct{})
 	go func() {
 		defer close(tickDone)
@@ -323,6 +360,7 @@ func (a *app) serve(ctx context.Context, args []string) error {
 	err = <-served
 	stop()
 	<-tickDone
+	<-loopsDone
 	if !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
@@ -889,7 +927,7 @@ func (a *app) githubPoll(ctx context.Context, args []string) error {
 	every := fs.Duration("every", 0, "")
 	var repos []string
 	fs.Func("adopt-repo", "", func(value string) error {
-		if !issueRepo.MatchString(value) || strings.HasSuffix(value, "/.") || strings.HasSuffix(value, "/..") {
+		if !github.ValidRepo(value) {
 			return fmt.Errorf("--adopt-repo must be OWNER/NAME")
 		}
 		repos = append(repos, value)

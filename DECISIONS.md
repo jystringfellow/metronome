@@ -832,6 +832,32 @@ Agent decisions (2026-11-28):
   file swap. There is no HTTP backup endpoint because the unauthenticated API would expose the whole log.
 - No event or schema change; existing logs replay unchanged.
 
+## Decided by the maintainer (2026-11-28): hosted shadow mode
+
+One hosted instance runs `serve` with its event store, intake, publish and GitHub polling beside it, and an
+authenticating proxy in front of the board. PostgreSQL is the recommended default store for hosted instances
+and SQLite remains supported; operators choose (see the PostgreSQL store). Laptops do not write to it yet; OIDC and runner tokens
+come later. Publish a generic image to GitHub's container registry and a generic Helm chart. Operators extend
+the image with their own tools and maintain their own values and infrastructure elsewhere.
+
+## Agent decision (2026-11-28): one configuration runs an instance
+
+- Use strict JSON version 1, additive-only; unknown fields fail rather than silently changing behaviour.
+- Apply declared workstream settings through the existing API. Omitted limits and labels stay unmanaged;
+  nothing is deleted. No new events or replay semantics.
+- Run existing intake, publish and poll rounds in-process through the service handler. Log each round by
+  loop name; failures and panics retry with exponential backoff from one second capped at the interval.
+- Inherit the operator's environment for secrets, with no secret fields or implicit shell expansion. Do not
+  log command arguments or environment. Restart to apply changes; no reload in this slice.
+
+## Open (2026-11-28): instance configuration follow-up
+
+- Whether to accept YAML or reload on SIGHUP.
+- Per-round command timeouts (see intake and publish follow-up); whether standalone loops should share backoff.
+- Whether to pass `METRONOME_URL` to children, or have the file own `addr`, `db` and `tick`.
+- Whether omitted limits should converge to defaults or undeclared workstreams be reported.
+- Whether to support structured JSON logs for hosting.
+
 ## Open
 
 Everything section 12 of SPEC.md marks Open or Unverified, plus:

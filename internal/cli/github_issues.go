@@ -3,14 +3,11 @@ package cli
 import (
 	"context"
 	"flag"
-	"regexp"
 	"strings"
 
 	"github.com/jystringfellow/metronome/internal/flow"
 	"github.com/jystringfellow/metronome/internal/github"
 )
-
-var issueRepo = regexp.MustCompile(`^[A-Za-z0-9-]+/[A-Za-z0-9_.-]+$`)
 
 func (a *app) githubIssues(ctx context.Context, args []string) error {
 	fs := newFlags("github issues")
@@ -23,7 +20,7 @@ func (a *app) githubIssues(ctx context.Context, args []string) error {
 	if err := parse(fs, args, 0); err != nil {
 		return err
 	}
-	if !issueRepo.MatchString(*repo) || strings.HasSuffix(*repo, "/.") || strings.HasSuffix(*repo, "/..") {
+	if !github.ValidRepo(*repo) {
 		return usagef("--repo must be OWNER/NAME")
 	}
 	if strings.TrimSpace(*label) == "" || strings.Contains(*label, ",") {
