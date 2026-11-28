@@ -60,3 +60,22 @@ are still unverified.
 The publisher needs `--assignee LOGIN` with an installation token, because there is no signed-in person.
 A GitHub App cannot reach a Project owned by a user account. Use an organisation-owned Project or run that
 intake or publisher using a person's token.
+
+## Running on Kubernetes
+
+With the [Helm chart](kubernetes.md), replace the `GH_TOKEN` entry with these values. The existing Secret
+contains the private key, not an installation token:
+
+```yaml
+extraEnv:
+  - name: METRONOME_GITHUB_APP_ID
+    value: "123"
+  - name: METRONOME_GITHUB_APP_INSTALLATION_ID
+    value: "456"
+secretEnv:
+  - name: METRONOME_GITHUB_APP_PRIVATE_KEY
+    secretName: metronome-github
+    key: app-key
+```
+
+Metronome refreshes installation tokens for the loops. Give an App publisher `--assignee pat`.
