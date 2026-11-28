@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -173,9 +174,9 @@ func startRunWithTerminal(e *env, terminal bool, args ...string) *runningCommand
 	})
 	go func() {
 		defer close(command.done)
-		command.code = cli.RunWithDeps(ctx, append([]string{"--server", "http://metronome.test", "--as", "laptop"}, args...), &command.out, &command.errOut, cli.Deps{
-			HTTP: e.http, Terminal: func() bool { return terminal },
-		})
+		deps := e.deps()
+		deps.Terminal = func() bool { return terminal }
+		command.code = cli.RunWithDeps(ctx, append([]string{"--server", "http://metronome.test", "--as", "laptop"}, args...), &command.out, &command.errOut, deps)
 	}()
 	return command
 }
@@ -371,7 +372,7 @@ func TestRunCommandClosesRun(t *testing.T) {
 				t.Fatal(err)
 			}
 			cmd.expectExit(t, 0)
-			if cmd.out.String() != "finished\n" || !strings.Contains(cmd.errOut.String(), tc.message) {
+			if cmd.out.String() != "finished\n" || !strings.Contains(cmd.errOut.String(), tc.message) || strings.Contains(cmd.errOut.String(), "retrying in") {
 				t.Fatalf("stdout %q, stderr %q", cmd.out.String(), cmd.errOut.String())
 			}
 			assertRunClosed(e, tc.reason, tc.branch)
@@ -540,16 +541,16 @@ func TestRunRetriesRenewalErrors(t *testing.T) {
 func TestRunClosingFailureIsNotClean(t *testing.T) {
 	for _, code := range []int{0, 3} {
 		t.Run(strconv.Itoa(code), func(t *testing.T) {
-			e := newBriefEnv(t)
+			e := newBriefEnvWithClock(t, newRunClock())
 			handler := e.http.Transport.(handlerTransport).h
 			e.http.Transport = handlerTransport{http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/v1/claims" && r.Header.Get(api.HeaderRequestID) == "q1" {
+					t.Error("global request ID was reused")
+				}
 				if strings.HasSuffix(r.URL.Path, "/submit") || strings.HasSuffix(r.URL.Path, "/release") {
 					w.WriteHeader(http.StatusServiceUnavailable)
 					_, _ = io.WriteString(w, "unavailable")
 					return
-				}
-				if r.URL.Path != "/v1/claims" && r.Header.Get(api.HeaderRequestID) != "" {
-					t.Error("request ID was reused")
 				}
 				handler.ServeHTTP(w, r)
 			})}
@@ -560,4 +561,289 @@ func TestRunClosingFailureIsNotClean(t *testing.T) {
 			}
 		})
 	}
+}
+
+type runClock struct {
+	mu    sync.Mutex
+	now   time.Time
+	waits []time.Duration
+}
+
+func newRunClock() *runClock {
+	return &runClock{now: time.Date(2026, 11, 27, 12, 0, 0, 0, time.UTC)}
+}
+
+func (clock *runClock) Now() time.Time {
+	clock.mu.Lock()
+	defer clock.mu.Unlock()
+	return clock.now
+}
+
+func (clock *runClock) advance(delay time.Duration) {
+	clock.mu.Lock()
+	defer clock.mu.Unlock()
+	clock.now = clock.now.Add(delay)
+}
+
+func (clock *runClock) Wait(ctx context.Context, delay time.Duration) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	clock.mu.Lock()
+	defer clock.mu.Unlock()
+	clock.waits = append(clock.waits, delay)
+	clock.now = clock.now.Add(delay)
+	return nil
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (transport roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return transport(req)
+}
+
+func isCloseRequest(req *http.Request) bool {
+	return req.URL.Path == "/v1/runs/R1/submit" || req.URL.Path == "/v1/runs/R1/release"
+}
+
+func TestRunCloseRecovers(t *testing.T) {
+	for _, tc := range []struct {
+		name, branch   string
+		code           int
+		transportError bool
+	}{
+		{"submit", "metronome/I1.1", 0, false},
+		{"drop after success", "", 0, true},
+		{"drop after failure", "", 3, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clock := newRunClock()
+			e := newBriefEnvWithClock(t, clock)
+			original := e.http.Transport
+			attempts := 0
+			e.http.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				if isCloseRequest(req) {
+					attempts++
+					if attempts <= 3 {
+						if tc.transportError {
+							return nil, errors.New("connection refused")
+						}
+						return handlerTransport{http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+							if attempts == 2 {
+								http.Error(w, `{"code":"internal","message":"unavailable"}`, http.StatusInternalServerError)
+							} else {
+								http.Error(w, "unavailable", http.StatusServiceUnavailable)
+							}
+						})}.RoundTrip(req)
+					}
+				}
+				return original.RoundTrip(req)
+			})
+			out, code := e.run("laptop", append([]string{"run", "--runner", "laptop", "--"}, helper(t, "branch", tc.branch, "exit", strconv.Itoa(tc.code))...)...)
+			if code != tc.code || attempts != 4 || strings.Count(out, "retrying in") != 3 || !reflect.DeepEqual(clock.waits, []time.Duration{time.Second, 2 * time.Second, 4 * time.Second}) {
+				t.Fatalf("exit %d, attempts %d, waits %v: %s", code, attempts, clock.waits, out)
+			}
+			if tc.branch != "" {
+				assertRunClosed(e, flow.CloseSubmitted, tc.branch)
+				if !strings.Contains(out, "submitted R1 on "+tc.branch) {
+					t.Fatal(out)
+				}
+			} else {
+				assertRunClosed(e, flow.CloseReleased, "")
+				if !strings.Contains(out, "dropped R1") {
+					t.Fatal(out)
+				}
+			}
+		})
+	}
+}
+
+func TestRunCloseRecoversAfterExpiry(t *testing.T) {
+	for _, tc := range []struct {
+		name, branch          string
+		commandCode, wantCode int
+	}{
+		{"submit", "metronome/I1.1", 0, 1},
+		{"drop after success", "", 0, 0},
+		{"drop after failure", "", 3, 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clock := newRunClock()
+			deadline := clock.Now().Add(flow.DefaultConfig().Lease)
+			e := newBriefEnvWithClock(t, clock)
+			handler := e.http.Transport.(handlerTransport).h
+			attempts, reads := 0, 0
+			e.http.Transport = handlerTransport{http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if isCloseRequest(r) {
+					attempts++
+					if clock.Now().Before(deadline) {
+						http.Error(w, "unavailable", http.StatusServiceUnavailable)
+						return
+					}
+				}
+				if r.URL.Path == "/v1/runs/R1" && r.Method == http.MethodGet {
+					reads++
+				}
+				handler.ServeHTTP(w, r)
+			})}
+			out, code := e.run("laptop", append([]string{"run", "--runner", "laptop", "--"}, helper(t, "branch", tc.branch, "exit", strconv.Itoa(tc.commandCode))...)...)
+			if code != tc.wantCode || reads != 1 || attempts != len(clock.waits)+1 || !strings.Contains(out, "lease on run R1 expired at "+deadline.Format(time.RFC3339)) {
+				t.Fatalf("exit %d, attempts %d, reads %d: %s", code, attempts, reads, out)
+			}
+			if tc.branch != "" && (!strings.Contains(out, "branch "+tc.branch+" was not submitted") || !strings.Contains(out, "claim slice I1.1 again")) {
+				t.Fatal(out)
+			}
+			assertRunClosed(e, flow.CloseLeaseExpired, "")
+			slice := e.board().Slices[0]
+			if slice.Status != flow.SliceStalled || !slice.HoldsExecute || !slice.HoldsReview {
+				t.Fatalf("unexpected slice: %+v", slice)
+			}
+		})
+	}
+}
+
+func TestRunCloseNeverRecovers(t *testing.T) {
+	clock := newRunClock()
+	start := clock.Now()
+	e := newBriefEnvWithClock(t, clock)
+	original := e.http.Transport.(handlerTransport)
+	e.http.Transport = handlerTransport{http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if isCloseRequest(r) {
+			http.Error(w, "unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		original.h.ServeHTTP(w, r)
+	})}
+	out, code := e.run("laptop", append([]string{"run", "--runner", "laptop", "--"}, helper(t, "branch", "metronome/I1.1")...)...)
+	bound := flow.DefaultConfig().Lease + time.Minute
+	if code != 1 || clock.Now().Sub(start) != bound || !strings.Contains(out, "lease on run R1 expired") || !strings.Contains(out, "branch metronome/I1.1 was not submitted") {
+		t.Fatalf("exit %d, elapsed %s: %s", code, clock.Now().Sub(start), out)
+	}
+	remaining, delay := bound, time.Second
+	for _, waited := range clock.waits {
+		if want := min(remaining, delay); waited != want {
+			t.Fatalf("waited %s, want %s", waited, want)
+		}
+		remaining -= waited
+		delay = min(2*delay, 30*time.Second)
+	}
+	if remaining != 0 {
+		t.Fatalf("remaining time %s", remaining)
+	}
+	e.http.Transport = original
+	e.ok("pat", "tick")
+	assertRunClosed(e, flow.CloseLeaseExpired, "")
+}
+
+func TestRunCloseLostResponse(t *testing.T) {
+	clock := newRunClock()
+	e := newBriefEnvWithClock(t, clock)
+	handler := e.http.Transport.(handlerTransport).h
+	var ids []string
+	e.http.Transport = handlerTransport{http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if isCloseRequest(r) {
+			ids = append(ids, r.Header.Get(api.HeaderRequestID))
+			if len(ids) == 1 {
+				response, err := (handlerTransport{handler}).RoundTrip(r)
+				if err != nil || response.StatusCode != http.StatusOK {
+					t.Fatalf("first close failed: %v, %v", response, err)
+				}
+				response.Body.Close()
+				http.Error(w, "bad gateway", http.StatusBadGateway)
+				return
+			}
+		}
+		handler.ServeHTTP(w, r)
+	})}
+	out, code := e.run("laptop", append([]string{"--request-id", "q1", "run", "--runner", "laptop", "--"}, helper(t, "branch", "metronome/I1.1")...)...)
+	if code != 0 || !reflect.DeepEqual(ids, []string{"metronome-run-R1-close", "metronome-run-R1-close"}) || !strings.Contains(out, "submitted R1 on metronome/I1.1") {
+		t.Fatalf("exit %d, IDs %v: %s", code, ids, out)
+	}
+	assertRunClosed(e, flow.CloseSubmitted, "metronome/I1.1")
+}
+
+func TestRunCloseDoesNotRetryInvalid(t *testing.T) {
+	clock := newRunClock()
+	e := newBriefEnvWithClock(t, clock)
+	handler := e.http.Transport.(handlerTransport).h
+	attempts := 0
+	e.http.Transport = handlerTransport{http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if isCloseRequest(r) {
+			attempts++
+			http.Error(w, `{"code":"invalid","message":"invalid branch"}`, http.StatusBadRequest)
+			return
+		}
+		handler.ServeHTTP(w, r)
+	})}
+	out, code := e.run("laptop", append([]string{"run", "--runner", "laptop", "--"}, helper(t, "branch", "metronome/I1.1")...)...)
+	if code != 1 || attempts != 1 || len(clock.waits) != 0 || !strings.Contains(out, "invalid branch") {
+		t.Fatalf("exit %d, attempts %d, waits %v: %s", code, attempts, clock.waits, out)
+	}
+}
+
+func TestRunSignalStopsCloseRetry(t *testing.T) {
+	clock := newRunClock()
+	e := newBriefEnvWithClock(t, clock)
+	handler := e.http.Transport.(handlerTransport).h
+	e.http.Transport = handlerTransport{http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if isCloseRequest(r) {
+			http.Error(w, "unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		handler.ServeHTTP(w, r)
+	})}
+	deps := e.deps()
+	deps.Wait = func(ctx context.Context, delay time.Duration) error {
+		if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(10 * time.Second):
+			t.Fatal("signal did not cancel close")
+			return errors.New("signal timeout")
+		}
+	}
+	var out bytes.Buffer
+	args := append([]string{"--server", "http://metronome.test", "--as", "laptop", "run", "--runner", "laptop", "--"}, helper(t, "branch", "metronome/I1.1")...)
+	code := cli.RunWithDeps(context.Background(), args, &out, &out, deps)
+	if code != 1 || !strings.Contains(out.String(), "gave up submitting run R1 on branch metronome/I1.1") || !strings.Contains(out.String(), "(signal)") {
+		t.Fatalf("exit %d: %s", code, &out)
+	}
+}
+
+func TestRunCloseUsesRenewedLease(t *testing.T) {
+	clock := newRunClock()
+	start := clock.Now()
+	e := newBriefEnvWithClock(t, clock)
+	handler := e.http.Transport.(handlerTransport).h
+	recoverAt := start.Add(flow.DefaultConfig().Lease + 2*time.Minute)
+	e.http.Transport = handlerTransport{http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if isCloseRequest(r) && clock.Now().Before(recoverAt) {
+			http.Error(w, "unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		handler.ServeHTTP(w, r)
+	})}
+	pathReady, pathRelease := filepath.Join(e.dir, "ready"), filepath.Join(e.dir, "release")
+	cmd := startRun(e, append([]string{"run", "--runner", "laptop", "--every", "20ms", "--"}, helper(t, "wait", pathReady, pathRelease, "branch", "metronome/I1.1")...)...)
+	waitFor(t, func() bool { return fileExists(pathReady) })
+	clock.advance(5 * time.Minute)
+	waitFor(t, func() bool {
+		for _, event := range runEvents(e) {
+			if event.kind == flow.EvHeartbeat && event.data.LeaseUntil.After(recoverAt) {
+				return true
+			}
+		}
+		return false
+	})
+	if err := os.WriteFile(pathRelease, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd.expectExit(t, 0)
+	if clock.Now().Before(recoverAt) {
+		t.Fatal("service recovered earlier than expected")
+	}
+	assertRunClosed(e, flow.CloseSubmitted, "metronome/I1.1")
 }

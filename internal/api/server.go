@@ -139,6 +139,7 @@ func Handler(eng *flow.Engine) http.Handler {
 	}))
 	mux.HandleFunc("GET /v1/inbox/{owner}", s.inbox)
 	mux.HandleFunc("GET /v1/events", s.events)
+	mux.HandleFunc("GET /v1/runs/{id}", s.run)
 	mux.HandleFunc("GET /v1/runs/{id}/history", s.history)
 	mux.HandleFunc("POST /v1/tick", s.tick)
 	mux.HandleFunc("POST /v1/backlog/sync", command(func(r *http.Request, c call, req BacklogRequest) (flow.Result, error) {
@@ -305,6 +306,21 @@ func (s *server) board(w http.ResponseWriter, r *http.Request) {
 	sort.Slice(b.Runs, func(i, j int) bool { return idLess(b.Runs[i].ID, b.Runs[j].ID) })
 	sort.Slice(b.Flags, func(i, j int) bool { return idLess(b.Flags[i].ID, b.Flags[j].ID) })
 	writeJSON(w, http.StatusOK, b)
+}
+
+func (s *server) run(w http.ResponseWriter, r *http.Request) {
+	var snapshot *flow.Run
+	s.eng.View(func(st *flow.State) {
+		if run := st.Runs[r.PathValue("id")]; run != nil {
+			copy := *run
+			snapshot = &copy
+		}
+	})
+	if snapshot == nil {
+		writeError(w, &flow.Error{Code: flow.CodeNotFound, Message: "unknown run " + strconv.Quote(r.PathValue("id"))})
+		return
+	}
+	writeJSON(w, http.StatusOK, snapshot)
 }
 
 func (s *server) history(w http.ResponseWriter, r *http.Request) {

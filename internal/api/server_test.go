@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -56,6 +57,79 @@ func TestUnknownRunHistory(t *testing.T) {
 	resp, body := request(t, server, http.MethodGet, "/v1/runs/R9/history")
 	if resp.StatusCode != http.StatusNotFound || !strings.Contains(string(body), `"code":"not_found"`) {
 		t.Fatalf("history returned %d: %s", resp.StatusCode, body)
+	}
+}
+
+func TestRunLookup(t *testing.T) {
+	ctx := context.Background()
+	eng, err := flow.NewEngine(ctx, flow.DefaultConfig(), store.NewMemory(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = eng.SyncBacklog(ctx, "pat", "", "", []flow.BacklogItem{{Ref: "ACME-1", Title: "Export reports", Owner: "pat"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = eng.StartPlan(ctx, "pat", "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = eng.ProposePlan(ctx, "pat", "", "I1", []flow.SliceSpec{{Title: "CSV export", Repo: "acme/app"}}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tier := 1
+	_, err = eng.ApprovePlan(ctx, "pat", "", "I1", &tier)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = eng.Claim(ctx, "laptop", "", "laptop", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(api.Handler(eng))
+	defer server.Close()
+	client := api.Client{BaseURL: server.URL, HTTP: server.Client()}
+	var open flow.Run
+	if err := client.Get(ctx, "/v1/runs/R1", &open); err != nil || open.ID != "R1" || open.Closed || open.SliceID != "I1.1" || open.LeaseUntil.IsZero() {
+		t.Fatalf("open run %+v: %v", open, err)
+	}
+	if _, err := eng.ReleaseRun(ctx, "laptop", "", "R1"); err != nil {
+		t.Fatal(err)
+	}
+	var closed flow.Run
+	if err := client.Get(ctx, "/v1/runs/R1", &closed); err != nil || !closed.Closed || closed.ClosedReason != flow.CloseReleased || !closed.LeaseUntil.Equal(open.LeaseUntil) {
+		t.Fatalf("closed run %+v: %v", closed, err)
+	}
+	resp, body := request(t, server, http.MethodGet, "/v1/runs/R9")
+	if resp.StatusCode != http.StatusNotFound || !strings.Contains(string(body), `"code":"not_found"`) {
+		t.Fatalf("unknown run returned %d: %s", resp.StatusCode, body)
+	}
+}
+
+func TestClientStatusError(t *testing.T) {
+	for _, tc := range []struct {
+		status        int
+		body, message string
+		code          flow.ErrorCode
+	}{
+		{503, "unavailable", "unavailable", ""},
+		{500, `{"code":"internal","message":"unavailable"}`, "internal: unavailable", "internal"},
+		{409, `{"code":"conflict","message":"run is closed"}`, "conflict: run is closed", flow.CodeConflict},
+	} {
+		t.Run(strconv.Itoa(tc.status), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tc.status)
+				_, _ = io.WriteString(w, tc.body)
+			}))
+			defer server.Close()
+			client := api.Client{BaseURL: server.URL, HTTP: server.Client()}
+			err := client.Post(context.Background(), "/v1/runs/R1/submit", "", nil, nil)
+			var status *api.StatusError
+			if !errors.As(err, &status) || status.Code != tc.status || flow.CodeOf(err) != tc.code || !strings.Contains(err.Error(), tc.message) {
+				t.Fatalf("status error %v (%+v), want %d, %s", err, status, tc.status, tc.code)
+			}
+		})
 	}
 }
 
