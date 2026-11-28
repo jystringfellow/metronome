@@ -1,8 +1,7 @@
 # Making a release
 
-The public image is `ghcr.io/jystringfellow/metronome`. The proposed release workflow,
-`.github/workflows/release.yml`, must be added and reviewed by a maintainer outside the agent
-sandbox, where CI files are protected. Until that happens, automatic publication is not enabled.
+The public image is `ghcr.io/jystringfellow/metronome`, published by
+`.github/workflows/release.yml`.
 
 After the main branch passes CI, a maintainer tags its chosen commit `vMAJOR.MINOR.PATCH`
 (or `vMAJOR.MINOR.PATCH-rc.N` for a prerelease) and pushes that tag. The workflow checks formatting,
