@@ -544,13 +544,13 @@ func TestAMergeOfAStalledSlicesPRIsReportedAndNotRecorded(t *testing.T) {
 	if sl := slice(t, eng); sl.Status != flow.SliceStalled || !sl.Rework || sl.PR == nil || sl.PR.HeadSHA != "aaa" {
 		t.Fatalf("slice after red checks = %+v", sl)
 	}
-	gh[key].HeadSHA, gh[key].HeadChecks = "bbb", github.ChecksSuccess
+	gh[key].HeadSHA, gh[key].HeadChecks = "bbb", github.ChecksFailure
 	gh[key].Reviews = []github.Review{{ID: "PRR_1", Author: "rev", State: github.ReviewApproved, CommitSHA: "bbb", SubmittedAt: time.Now()}}
 	if res := pollWithoutWrites(t, eng, transport, poll); len(res.Notes) != 0 {
 		t.Fatalf("notes for open stalled PR = %v", res.Notes)
 	}
 	if sl := slice(t, eng); sl.Status != flow.SliceStalled || sl.PR.HeadSHA != "aaa" || sl.PR.ChecksGreen {
-		t.Fatalf("slice with a new green head = %+v", sl)
+		t.Fatalf("slice with a new red head = %+v", sl)
 	}
 	gh[key].State, gh[key].MergedBy = github.PRMerged, "pat"
 	res := pollWithoutWrites(t, eng, transport, poll)
@@ -651,7 +651,7 @@ func TestMergesAndClosesOfAQueuedRunningOrFlaggedSlicesPRAreReportedAndNotRecord
 
 	poll()
 	assertSlice(flow.SliceQueued)
-	snap.HeadSHA = "bbb"
+	snap.HeadSHA, snap.HeadChecks = "bbb", github.ChecksPending
 	snap.Reviews = append(snap.Reviews, github.Review{ID: "PRR_2", Author: "rev", State: github.ReviewApproved, CommitSHA: "bbb", SubmittedAt: snap.Reviews[0].SubmittedAt.Add(time.Minute)})
 	assertQuietPoll(flow.SliceQueued)
 	snap.State, snap.MergedBy = github.PRMerged, "pat"
@@ -665,6 +665,7 @@ func TestMergesAndClosesOfAQueuedRunningOrFlaggedSlicesPRAreReportedAndNotRecord
 	snap.State, snap.MergedBy = github.PROpen, ""
 	r, err := eng.Claim(ctx, "laptop", "", "laptop", "", "")
 	must(t, r, err)
+	snap.HeadChecks = github.ChecksSuccess
 	assertQuietPoll(flow.SliceRunning)
 	snap.State = github.PRClosed
 	res = pollWithoutWrites(t, eng, transport, poll)
@@ -679,4 +680,106 @@ func TestMergesAndClosesOfAQueuedRunningOrFlaggedSlicesPRAreReportedAndNotRecord
 	res = pollWithoutWrites(t, eng, transport, poll)
 	assertReworkPRNote(t, res, "who merged", flow.SliceFlagged)
 	assertSlice(flow.SliceFlagged)
+}
+
+func TestReworkFixedOutsideARun(t *testing.T) {
+	for _, scenario := range []string{"stalled", "queued", "merged between polls", "running"} {
+		t.Run(scenario, func(t *testing.T) {
+			ctx := context.Background()
+			eng, err := flow.NewEngine(ctx, flow.DefaultConfig(), store.NewMemory(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			submittedSlice(t, eng)
+			snap := &github.Snapshot{Repo: "acme/app", Number: 7, HeadSHA: "aaa", State: github.PROpen, HeadChecks: github.ChecksSuccess}
+			transport := &countingTransport{handlerTransport: handlerTransport{api.Handler(eng)}}
+			p := github.Poller{
+				Client: &api.Client{BaseURL: "http://metronome.test", Actor: "github", HTTP: &http.Client{Transport: transport}},
+				Source: fakeGitHub{"acme/app metronome/I1.1": snap},
+			}
+			poll := func() github.PollResult {
+				t.Helper()
+				res, err := p.Once(ctx)
+				if err != nil || len(res.Errors) != 0 {
+					t.Fatalf("poll: %v, errors %v", err, res.Errors)
+				}
+				return res
+			}
+			wantRecorded(t, poll(), "pr-opened", "checks", "ready-for-review")
+			if scenario == "queued" {
+				snap.Reviews = []github.Review{{ID: "r1", Author: "rev", State: github.ReviewChangesRequested, CommitSHA: "aaa"}}
+				wantRecorded(t, poll(), "changes-requested")
+			} else {
+				snap.HeadSHA, snap.HeadChecks = "bbb", github.ChecksFailure
+				wantRecorded(t, poll(), "pr-opened", "checks")
+			}
+			waiting := slice(t, eng).Status
+			if scenario == "stalled" {
+				for _, checks := range []github.Checks{github.ChecksPending, github.ChecksFailure, github.ChecksNone} {
+					snap.HeadSHA, snap.HeadChecks = "ccc", checks
+					res := pollWithoutWrites(t, eng, transport, poll)
+					if checks == github.ChecksNone && !strings.Contains(strings.Join(res.Notes, "\n"), "no checks reported") {
+						t.Fatal(res.Notes)
+					}
+					if sl := slice(t, eng); sl.Status != waiting || sl.PR.HeadSHA != "bbb" || !sl.Rework {
+						t.Fatalf("slice with %s checks = %+v", checks, sl)
+					}
+				}
+			}
+			if scenario == "running" {
+				r, err := eng.Claim(ctx, "laptop", "", "laptop", "", "")
+				must(t, r, err)
+			}
+			snap.HeadSHA, snap.HeadChecks, snap.HeadAuthor = "ccc", github.ChecksSuccess, "sam"
+			switch scenario {
+			case "running":
+				pollWithoutWrites(t, eng, transport, poll)
+				if sl := slice(t, eng); sl.Status != flow.SliceRunning || sl.PR.HeadSHA != "bbb" || !sl.Rework {
+					t.Fatal(sl)
+				}
+				r, err := eng.Submit(ctx, "laptop", "", "R2", "metronome/I1.1")
+				must(t, r, err)
+				wantRecorded(t, poll(), "pr-opened", "checks", "ready-for-review")
+			case "queued":
+				snap.Reviews = append(snap.Reviews, github.Review{ID: "r2", Author: "rev", State: github.ReviewApproved, CommitSHA: "ccc", SubmittedAt: time.Now()})
+				wantRecorded(t, poll(), "rework-fixed", "approved")
+				if sl := slice(t, eng); sl.Status != flow.SliceApproved || sl.PR.ApprovedSHA != "ccc" || sl.Rework {
+					t.Fatal(sl)
+				}
+				return
+			case "merged between polls":
+				snap.State, snap.MergedBy = github.PRMerged, "pat"
+				wantRecorded(t, poll(), "rework-fixed", "merged")
+				if sl := slice(t, eng); sl.Status != flow.SliceMerged || sl.PR.ApprovedSHA != "ccc" {
+					t.Fatal(sl)
+				}
+				return
+			default:
+				wantRecorded(t, poll(), "rework-fixed")
+				events := eng.EventsAfter(0, 0)
+				last := events[len(events)-1]
+				if last.Type != flow.EvReworkFixed || !strings.Contains(string(last.Data), `"by":"sam"`) {
+					t.Fatal(last)
+				}
+			}
+			if sl := slice(t, eng); sl.Status != flow.SliceInReview || sl.PR.HeadSHA != "ccc" || sl.Rework || sl.FailedHead != "" {
+				t.Fatal(sl)
+			}
+			eng.View(func(s *flow.State) {
+				if u := s.Usage(); u.Execute != 0 || u.Review != 1 || u.PerApprover["rev"] != 1 {
+					t.Fatal(u)
+				}
+			})
+			pollWithoutWrites(t, eng, transport, poll)
+			r, err := eng.Claim(ctx, "laptop", "", "laptop", "", "")
+			if flow.CodeOf(err) != flow.CodeNoWork || len(r.Events) != 0 {
+				t.Fatalf("claim: %+v, %v", r, err)
+			}
+			snap.State, snap.MergedBy = github.PRMerged, "pat"
+			wantRecorded(t, poll(), "merged")
+			if sl := slice(t, eng); sl.Status != flow.SliceMerged || sl.PR.ApprovedSHA != "ccc" {
+				t.Fatal(sl)
+			}
+		})
+	}
 }

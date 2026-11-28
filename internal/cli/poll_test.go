@@ -53,12 +53,42 @@ func TestGitHubPollMovesASliceThroughReviewFromTheCommandLine(t *testing.T) {
 		t.Fatalf("usage in review = %+v", u)
 	}
 
-	prs["metronome/I1.1"].Reviews = []github.Review{{ID: "PRR_1", Author: "rev", State: github.ReviewApproved, CommitSHA: "abc1234567", SubmittedAt: time.Now()}}
-	if out, code := e.poll(prs); code != 0 || !strings.Contains(out, "recorded I1.1 approved by rev at abc1234") {
+	snap := prs["metronome/I1.1"]
+	snap.HeadChecks = github.ChecksFailure
+	if out, code := e.poll(prs); code != 0 || !strings.Contains(out, "checks failed") {
+		t.Fatalf("poll exited %d:\n%s", code, out)
+	}
+	snap.HeadSHA, snap.HeadChecks, snap.HeadAuthor = "cccccccc", github.ChecksSuccess, "sam"
+	if out, code := e.poll(prs); code != 0 || !strings.Contains(out, "recorded I1.1 back in review at ccccccc, fixed outside a run by sam") {
+		t.Fatalf("poll exited %d:\n%s", code, out)
+	}
+	snap.Reviews = []github.Review{{ID: "PRR_1", Author: "rev", State: github.ReviewApproved, CommitSHA: "cccccccc", SubmittedAt: time.Now()}}
+	if out, code := e.poll(prs); code != 0 || !strings.Contains(out, "recorded I1.1 approved by rev at ccccccc") {
 		t.Fatalf("poll exited %d:\n%s", code, out)
 	}
 	if out, code := e.poll(prs); code != 0 || strings.Contains(out, "recorded") {
 		t.Fatalf("a repeat poll exited %d and recorded:\n%s", code, out)
+	}
+}
+
+func TestGitHubReworkFixedCommand(t *testing.T) {
+	e := newEnv(t)
+	backlog := e.file("backlog.json", api.BacklogRequest{Items: []flow.BacklogItem{{Ref: "ACME-1", Title: "Add export", Owner: "pat", Slices: []flow.SliceSpec{{Title: "API endpoint", Repo: "acme/app"}}}}})
+	e.ok("pat", "backlog", "sync", backlog)
+	e.ok("agent", "plan", "start")
+	e.ok("pat", "plan", "approve", "I1")
+	e.ok("laptop", "next", "--runner", "laptop")
+	e.ok("laptop", "submit", "R1", "--branch", "metronome/I1.1")
+	e.ok("github", "github", "pr-opened", "--slice", "I1.1", "--repo", "acme/app", "--number", "7", "--head", "aaa")
+	e.ok("github", "github", "checks", "--slice", "I1.1", "--head", "aaa", "--failure")
+	out := e.ok("github", "github", "rework-fixed", "--slice", "I1.1", "--repo", "acme/app", "--number", "7", "--head", "ccc", "--by", "sam")
+	for _, want := range []string{"pr_opened", "checks_completed", "rework_fixed"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output %q lacks %q", out, want)
+		}
+	}
+	if out := e.ok("github", "help"); !strings.Contains(out, "github rework-fixed") {
+		t.Fatal(out)
 	}
 }
 

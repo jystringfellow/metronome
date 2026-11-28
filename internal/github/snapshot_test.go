@@ -44,6 +44,19 @@ func TestParsePRListKeepsWhoMerged(t *testing.T) {
 	}
 }
 
+func TestParsePRListHeadAuthor(t *testing.T) {
+	for commits, want := range map[string]string{
+		`[{"oid":"old","authors":[{"login":"pat"}]},{"oid":"h","authors":[{}, {"login":"sam"},{"login":"rev"}]}]`: "sam",
+		`[{"oid":"old","authors":[{"login":"pat"}]}]`:                                                             "",
+		`[{"oid":"h","authors":[{}]}]`:                                                                            "",
+	} {
+		snap, err := ParsePRList("acme/app", []byte(`[{"number":7,"headRefOid":"h","state":"OPEN","commits":`+commits+`}]`))
+		if err != nil || snap.HeadAuthor != want {
+			t.Fatalf("snapshot = %+v, err = %v, want author %q", snap, err, want)
+		}
+	}
+}
+
 func TestParsePRListWithNoPRs(t *testing.T) {
 	snap, err := ParsePRList("acme/app", []byte(`[]`))
 	if err != nil || snap != nil {

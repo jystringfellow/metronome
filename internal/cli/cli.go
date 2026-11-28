@@ -73,13 +73,14 @@ GitHub:
                          print backlog JSON from open labelled issues, for intake; see docs/intake.md
   github publish --project OWNER/N --instance NAME [--status-field Status] [--map TRANSITION=OPTION] [--assignee LOGIN]
                          read transitions and update project Status, PR links and issue claims
-  github poll [--every 1m]        record what GitHub shows for each submitted slice's branch, once or on a repeat
+  github poll [--every 1m]        record PR activity, including rework fixed outside a run, once or on a repeat
   github pr-opened --slice S --repo OWNER/NAME --number N --head SHA
   github checks --slice S --head SHA (--success | --failure)
   github ready-for-review --slice S
   github approved --slice S --head SHA --by WHO
   github changes-requested --slice S --by WHO
   github merged --slice S [--by WHO]   WHO merged it; before an approval, WHO approves it
+  github rework-fixed --slice S --repo OWNER/NAME --number N --head SHA [--by WHO]   a green head pushed outside a run returns rework to review; WHO pushed it
 
 Azure DevOps:
   ado items --org URL --project NAME (--wiql FILE | --query ID) [--owner WHO] [--ready-states S,...]

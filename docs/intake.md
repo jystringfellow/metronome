@@ -244,7 +244,7 @@ same event; ask changes follow them.
 | `awaiting_release`, `releasing` | Waiting for or holding a Release slot. |
 | `done`, `dropped` | Item finished or abandoned. |
 | `claimed`, `submitted` | Slice claimed or submitted. |
-| `pr_open`, `in_review`, `approved`, `merged` | PR stages, including return to PR open on approval withdrawal. |
+| `pr_open`, `in_review`, `approved`, `merged` | PR stages, including return to PR open on approval withdrawal and return to review after a fix outside a run. |
 | `rework` | Failed checks or requested changes. |
 | `stalled`, `parked`, `flagged` | Slice waiting, returned to queue, or flagged. |
 | `asked`, `answered`, `ask_timed_out` | Human ask raised, resolved or timed out. |

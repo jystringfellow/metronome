@@ -48,6 +48,7 @@ type Snapshot struct {
 	Repo       string
 	Number     int
 	HeadSHA    string
+	HeadAuthor string
 	Draft      bool
 	State      PRState
 	HeadChecks Checks
@@ -63,7 +64,7 @@ type GH struct {
 	Run func(ctx context.Context, args ...string) ([]byte, error)
 }
 
-const prFields = "number,headRefOid,isDraft,state,updatedAt,mergedBy,reviews,statusCheckRollup"
+const prFields = "number,headRefOid,isDraft,state,updatedAt,mergedBy,reviews,statusCheckRollup,commits"
 
 func (g GH) PRForBranch(ctx context.Context, repo, branch string) (*Snapshot, error) {
 	run := g.Run
@@ -95,7 +96,13 @@ type ghPR struct {
 	State      PRState                 `json:"state"`
 	UpdatedAt  time.Time               `json:"updatedAt"`
 	MergedBy   *struct{ Login string } `json:"mergedBy"`
-	Reviews    []struct {
+	Commits    []struct {
+		Oid     string `json:"oid"`
+		Authors []struct {
+			Login string `json:"login"`
+		} `json:"authors"`
+	} `json:"commits"`
+	Reviews []struct {
 		ID          string                 `json:"id"`
 		Author      struct{ Login string } `json:"author"`
 		State       ReviewState            `json:"state"`
@@ -132,6 +139,18 @@ func ParsePRList(repo string, data []byte) (*Snapshot, error) {
 	snap := &Snapshot{Repo: repo, Number: p.Number, HeadSHA: p.HeadRefOid, Draft: p.IsDraft, State: p.State, HeadChecks: ChecksNone}
 	if p.MergedBy != nil {
 		snap.MergedBy = p.MergedBy.Login
+	}
+	for _, commit := range p.Commits {
+		if commit.Oid != p.HeadRefOid {
+			continue
+		}
+		for _, author := range commit.Authors {
+			if author.Login != "" {
+				snap.HeadAuthor = author.Login
+				break
+			}
+		}
+		break
 	}
 	for _, r := range p.Reviews {
 		id := r.ID

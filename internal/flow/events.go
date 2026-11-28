@@ -41,6 +41,7 @@ const (
 	EvPRApproved          = "pr_approved"
 	EvApprovalWithdrawn   = "approval_withdrawn"
 	EvPRChangesRequested  = "pr_changes_requested"
+	EvReworkFixed         = "rework_fixed"
 	EvItemAwaitsRelease   = "item_awaits_release"
 	EvReleaseSlotTaken    = "release_slot_taken"
 	EvPRMerged            = "pr_merged"
@@ -167,6 +168,12 @@ type prApproved struct {
 type prChangesRequested struct {
 	SliceID string `json:"slice_id"`
 	By      string `json:"by"`
+}
+
+type reworkFixed struct {
+	SliceID string `json:"slice_id"`
+	HeadSHA string `json:"head_sha"`
+	By      string `json:"by,omitempty"`
 }
 
 type prMerged struct {
@@ -462,6 +469,19 @@ func (s *State) apply(e Event) error {
 			sl.Resume, sl.ReworkReason = ResumeChecksFailed, ResumeChecksFailed
 			sl.FailedHead, sl.ChangesRequestedBy = p.HeadSHA, ""
 		}
+	case EvReworkFixed:
+		var p reworkFixed
+		if err := json.Unmarshal(e.Data, &p); err != nil {
+			return err
+		}
+		sl := s.Slices[p.SliceID]
+		if sl == nil || sl.PR == nil {
+			return errUnknown("slice PR", p.SliceID)
+		}
+		sl.Status, sl.HoldsExecute, sl.HoldsReview = SliceInReview, false, true
+		sl.Rework, sl.Front, sl.StalledAt = false, false, time.Time{}
+		sl.Resume, sl.ReworkReason, sl.FailedHead, sl.ChangesRequestedBy = "", "", "", ""
+		sl.Version++
 	case EvPRReadyForReview:
 		sl, err := s.sliceFor(e.Data)
 		if err != nil {

@@ -112,8 +112,8 @@ func TestReconcile(t *testing.T) {
 		{"a merge while the slice is reworked is reported, not recorded", reworked(flow.SliceQueued), merged, nil, "merged by pat while the slice is queued for rework"},
 		{"a stalled slice with no PR snapshot records nothing", stalled(), nil, nil, ""},
 		{"a stalled slice's open PR records nothing, even with failed checks on its head", stalled(), open("aaa", ChecksFailure), nil, ""},
-		{"a stalled slice waits for the fixer before a new green, approved head is recorded", stalled(), open("bbb", ChecksSuccess, review("r1", "rev", ReviewApproved, "bbb", 1)), nil, ""},
-		{"a stalled slice's unchecked head is ignored", stalled(), open("bbb", ChecksNone), nil, ""},
+		{"a stalled slice fixed outside a run returns to review and can be approved on the new head", stalled(), open("bbb", ChecksSuccess, review("r1", "rev", ReviewApproved, "bbb", 1)), []string{"rework-fixed", "approved"}, "who pushed"},
+		{"a stalled slice's unchecked head is ignored", stalled(), open("bbb", ChecksNone), nil, "no checks reported"},
 		{"a replacement open PR on a stalled slice's branch is ignored", stalled(), &Snapshot{Repo: "acme/app", Number: 9, HeadSHA: "bbb", State: PROpen, HeadChecks: ChecksSuccess}, nil, ""},
 		{"a merge of a stalled slice's PR is reported for a person to decide", stalled(), merged, nil, "a person must decide"},
 		{"a merge of a stalled slice's PR with no merger is reported, not recorded", stalled(), mergedByNobody, nil, "who merged"},
@@ -134,14 +134,39 @@ func TestReconcile(t *testing.T) {
 		{"a merge at a moved head records the head then the merge", approvedSlice, mergedNewHead, []string{"pr-opened", "merged"}, ""},
 		{"a merge at a moved head with no merger records nothing", approvedSlice, movedMergeByNobody, nil, "who merged"},
 	}
-	for _, status := range []flow.SliceStatus{flow.SliceQueued, flow.SliceRunning, flow.SliceFlagged} {
+	for _, status := range []flow.SliceStatus{flow.SliceQueued, flow.SliceStalled, flow.SliceRunning, flow.SliceFlagged} {
 		prefix := string(status) + ": "
 		sl := reworked(status)
+		var fixed, approved []string
+		var fixedNote, uncheckedNote string
+		mergeNote := "a person must decide"
+		var fixedMerge []string
+		if status == flow.SliceQueued || status == flow.SliceStalled {
+			fixed, approved = []string{"rework-fixed"}, []string{"rework-fixed", "approved"}
+			fixedNote, uncheckedNote = "who pushed", "no checks reported"
+			fixedMerge, mergeNote = []string{"rework-fixed", "merged"}, "who pushed"
+			cases = append(cases,
+				reconcileCase{prefix + "new change request", sl, open("bbb", ChecksSuccess, review("r2", "rev", ReviewChangesRequested, "bbb", 2)), []string{"rework-fixed", "changes-requested"}, fixedNote},
+				reconcileCase{prefix + "old change request", sl, open("bbb", ChecksSuccess, review("r1", "rev", ReviewChangesRequested, "aaa", 1)), fixed, fixedNote},
+			)
+		}
+		redMerge := open("bbb", ChecksFailure)
+		redMerge.State, redMerge.MergedBy = PRMerged, "pat"
+		nonRework := sl
+		nonRework.Rework = false
 		cases = append(cases,
 			reconcileCase{prefix + "no PR snapshot", sl, nil, nil, ""},
 			reconcileCase{prefix + "failed checks", sl, open("aaa", ChecksFailure), nil, ""},
-			reconcileCase{prefix + "new green, approved head", sl, open("bbb", ChecksSuccess, review("r1", "rev", ReviewApproved, "bbb", 1)), nil, ""},
-			reconcileCase{prefix + "unchecked head", sl, open("bbb", ChecksNone), nil, ""},
+			reconcileCase{prefix + "new green, approved head", sl, open("bbb", ChecksSuccess, review("r1", "rev", ReviewApproved, "bbb", 1)), approved, fixedNote},
+			reconcileCase{prefix + "new green head", sl, open("bbb", ChecksSuccess), fixed, fixedNote},
+			reconcileCase{prefix + "same green head", sl, open("aaa", ChecksSuccess), nil, ""},
+			reconcileCase{prefix + "new pending head", sl, open("bbb", ChecksPending), nil, ""},
+			reconcileCase{prefix + "new red head", sl, open("bbb", ChecksFailure), nil, ""},
+			reconcileCase{prefix + "unchecked head", sl, open("bbb", ChecksNone), nil, uncheckedNote},
+			reconcileCase{prefix + "new green merged head", sl, mergedNewHead, fixedMerge, mergeNote},
+			reconcileCase{prefix + "new merged head without merger", sl, movedMergeByNobody, nil, "who merged"},
+			reconcileCase{prefix + "new red merged head", sl, redMerge, nil, "a person must decide"},
+			reconcileCase{prefix + "not rework", nonRework, open("bbb", ChecksSuccess), nil, ""},
 			reconcileCase{prefix + "new green draft head", sl, movedDraft, nil, ""},
 			reconcileCase{prefix + "replacement open PR", sl, &Snapshot{Repo: "acme/app", Number: 9, HeadSHA: "bbb", State: PROpen, HeadChecks: ChecksSuccess}, nil, ""},
 			reconcileCase{prefix + "merge", sl, merged, nil, "a person must decide"},
@@ -164,6 +189,20 @@ func TestReconcile(t *testing.T) {
 				t.Fatalf("notes = %v, want none", notes)
 			}
 		})
+	}
+}
+
+func TestReworkFixedAction(t *testing.T) {
+	snap := open("cccccccc", ChecksSuccess)
+	snap.HeadAuthor = "sam"
+	actions, notes := Reconcile(stalled(), snap)
+	if len(actions) != 1 || len(notes) != 0 || actions[0].Request.By != "sam" || actions[0].RequestID != "github:I1.1:acme/app#7:fixed:cccccccc:v3" || actions[0].String() != "I1.1 back in review at ccccccc, fixed outside a run by sam" {
+		t.Fatalf("actions = %+v, notes = %v", actions, notes)
+	}
+	snap.HeadAuthor = ""
+	actions, notes = Reconcile(stalled(), snap)
+	if len(actions) != 1 || actions[0].String() != "I1.1 back in review at ccccccc, fixed outside a run" || len(notes) != 1 || !strings.Contains(notes[0], "who pushed") {
+		t.Fatalf("actions = %+v, notes = %v", actions, notes)
 	}
 }
 
